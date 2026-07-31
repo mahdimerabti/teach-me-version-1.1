@@ -1,0 +1,35 @@
+{
+  "appId": "com.teachme.app",
+  "appName": "Teach Me",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "hostname": "teachmelearn.netlify.app",
+    "allowNavigation": [
+      "*.supabase.co",
+      "*.supabase.in",
+      "meet.jit.si",
+      "*.jit.si",
+      "*.netlify.app",
+      "accounts.google.com",
+      "*.googleapis.com",
+      "*"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "Browser": {
+      "presentationStyle": "popover"
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#f8fafc",
+      "overlaysWebView": false
+    }
+  }
+}
