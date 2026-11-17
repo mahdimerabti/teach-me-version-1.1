@@ -164,6 +164,65 @@ export type Database = {
         Insert: Omit<Database['public']['Tables']['notifications']['Row'], 'id' | 'created_at'>;
         Update: Partial<Database['public']['Tables']['notifications']['Insert']>;
       };
+      rooms: {
+        Row: {
+          id: string;
+          session_id: string | null;
+          host_user_id: string | null;
+          student_user_id: string | null;
+          title: string;
+          status: 'waiting' | 'live' | 'ended';
+          active_mode: 'video' | 'whiteboard' | 'screenshare';
+          whiteboard_state: Record<string, any>;
+          started_at: string | null;
+          ended_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['rooms']['Row']> & { id: string };
+        Update: Partial<Database['public']['Tables']['rooms']['Row']>;
+      };
+      room_participants: {
+        Row: {
+          id: string;
+          room_id: string;
+          user_id: string;
+          display_name: string;
+          avatar_url: string | null;
+          role: 'host' | 'student';
+          is_muted: boolean;
+          is_camera_off: boolean;
+          is_hand_raised: boolean;
+          is_sharing_screen: boolean;
+          is_online: boolean;
+          joined_at: string;
+          left_at: string | null;
+          updated_at: string;
+        };
+        Insert: Omit<Database['public']['Tables']['room_participants']['Row'], 'id' | 'joined_at' | 'updated_at'> & {
+          id?: string;
+          joined_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['room_participants']['Row']>;
+      };
+      room_messages: {
+        Row: {
+          id: string;
+          room_id: string;
+          sender_id: string;
+          sender_name: string;
+          sender_role: 'host' | 'student';
+          content: string;
+          kind: 'text' | 'system' | 'reaction' | 'file';
+          created_at: string;
+        };
+        Insert: Omit<Database['public']['Tables']['room_messages']['Row'], 'id' | 'created_at'> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['room_messages']['Row']>;
+      };
     };
   };
 };
