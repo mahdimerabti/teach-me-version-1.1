@@ -33,6 +33,8 @@ interface StudentAppProps {
   language: 'en' | 'ar' | 'fr';
   onChangeLanguage: (lang: 'en' | 'ar' | 'fr') => void;
   onOpenSetPassword?: () => void;
+  initialRoomId?: string | null;
+  onConsumeInitialRoom?: () => void;
 }
 
 type Screen =
@@ -75,7 +77,7 @@ const CATEGORY_ICON_MAP: Record<string, React.ComponentType<{ className?: string
   health: HeartPulse,
 };
 
-export default function StudentApp({ user, onLogout, language, onChangeLanguage, onOpenSetPassword }: StudentAppProps) {
+export default function StudentApp({ user, onLogout, language, onChangeLanguage, onOpenSetPassword, initialRoomId, onConsumeInitialRoom }: StudentAppProps) {
   const [screen, setScreen] = useState<Screen>('home');
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
@@ -165,6 +167,14 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   };
 
   useEffect(() => {
+    if (initialRoomId) {
+      setLiveRoomId(initialRoomId);
+      setScreen('meeting');
+      onConsumeInitialRoom?.();
+    }
+  }, [initialRoomId]);
+
+  useEffect(() => {
     fetchApprovedTutors();
 
     const channel = supabase
@@ -178,7 +188,11 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
       )
       .subscribe();
 
+    const onFocus = () => fetchApprovedTutors();
+    window.addEventListener('focus', onFocus);
+
     return () => {
+      window.removeEventListener('focus', onFocus);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -708,12 +722,12 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
 
         <div className="space-y-3">
           <h3 className="font-semibold text-gray-800">{t('Upcoming Sessions', 'الحصص القادمة')}</h3>
-          {bookedSessions.filter(s => s.status === 'confirmed').length === 0 && (
+          {bookedSessions.filter(s => s.status === 'confirmed' || s.status === 'live').length === 0 && (
             <div className="bg-white rounded-2xl p-6 shadow-sm text-center text-sm text-gray-400">
               {t('No upcoming sessions yet. Book a tutor to get started!', 'لا توجد حصص قادمة بعد. احجز مع أستاذ للبدء!')}
             </div>
           )}
-          {bookedSessions.filter(s => s.status === 'confirmed').map((s) => (
+          {bookedSessions.filter(s => s.status === 'confirmed' || s.status === 'live').map((s) => (
             <div key={s.id} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 card-hover hover-blue-card interactive-card">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -722,7 +736,11 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2 flex-wrap">
                     <p className="font-bold text-gray-800 text-sm truncate">{s.subject}</p>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 flex-shrink-0">{t('confirmed', 'مؤكدة')}</span>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${
+                      s.status === 'live' ? 'bg-red-100 text-red-700 animate-pulse' : 'bg-green-100 text-green-700'
+                    }`}>
+                      {s.status === 'live' ? t('LIVE NOW', 'مباشر الآن') : t('confirmed', 'مؤكدة')}
+                    </span>
                   </div>
                   <p className="text-xs text-gray-500 mt-0.5 truncate">{s.tutorName}</p>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-blue-600 font-medium mt-1.5">
@@ -1119,7 +1137,9 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     <CreditHistoryScreen language={language} onBack={() => nav('packages')} />
   );
 
-  const upcomingSession = bookedSessions.find(s => s.status === 'confirmed');
+  const upcomingSession =
+    bookedSessions.find(s => s.status === 'live') ||
+    bookedSessions.find(s => s.status === 'confirmed');
 
   if (screen === 'home' && activeNav === 'home') return (
     <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">

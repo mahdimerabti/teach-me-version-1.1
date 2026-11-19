@@ -21,7 +21,7 @@ export type BookedSession = {
   startTime: string;
   endTime: string;
   creditCost: number;
-  status: 'confirmed' | 'completed' | 'cancelled' | 'missed';
+  status: 'confirmed' | 'live' | 'completed' | 'cancelled' | 'missed';
   liveRoomId: string;
   createdAt: string;
 };
@@ -87,8 +87,9 @@ async function fetchSessions() {
         live_room_id,
         created_at,
         subject,
-        tutors (name, name_ar)
-      `);
+        tutors!inner (name, name_ar, status)
+      `)
+      .eq('tutors.status', 'approved');
 
     if (error) throw error;
 
@@ -119,10 +120,17 @@ async function fetchSessions() {
   }
 }
 
-supabase.auth.onAuthStateChange((event, session) => {
+let activeSessionsChannel: any = null;
+
+supabase.auth.onAuthStateChange((_event, session) => {
+  if (activeSessionsChannel) {
+    supabase.removeChannel(activeSessionsChannel);
+    activeSessionsChannel = null;
+  }
+
   if (session?.user) {
     fetchSessions();
-    const channel = supabase
+    activeSessionsChannel = supabase
       .channel('sessions-channel')
       .on(
         'postgres_changes',
@@ -132,14 +140,14 @@ supabase.auth.onAuthStateChange((event, session) => {
         }
       )
       .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
   } else {
     globalSessions = [];
     notify();
   }
 });
+
+// Trigger initial load if session is already hydrated
+fetchSessions();
 
 export function getSessions(): BookedSession[] {
   return globalSessions;
