@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, Star, Users, Clock, MessageSquare, Calendar,
   CheckCircle, Send, ChevronRight, Bell, LogOut, User,
@@ -43,7 +43,8 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   const [submittingAnswer, setSubmittingAnswer] = useState<string | null>(null);
 
   const [tutorId, setTutorId] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>('pending');
+  const [status, setStatus] = useState<string>(profile?.status || 'pending');
+  const [hasLoadedStatus, setHasLoadedStatus] = useState(false);
   const [dbRating, setDbRating] = useState<number>(4.9);
   const [dbReviewCount, setDbReviewCount] = useState<number>(1);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -110,24 +111,36 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
         }
       }
 
-      const { data: savedTutor, error: tutErr } = await supabase.from('tutors').upsert({
-        ...(realTutorId ? { id: realTutorId } : {}),
+      const updatePayload: any = {
         user_id: user.id,
         name: user.name,
         bio: editBio,
         hourly_rate: Number(editHourlyRate) || 1500,
-        category: editCategory,
-        status: status || 'pending'
-      }).select('id').maybeSingle();
+        category: editCategory
+      };
+      if (realTutorId) {
+        updatePayload.id = realTutorId;
+      } else {
+        updatePayload.status = 'pending';
+      }
+
+      const { data: savedTutor, error: tutErr } = await supabase
+        .from('tutors')
+        .upsert(updatePayload, { onConflict: 'user_id' })
+        .select('id')
+        .maybeSingle();
 
       if (tutErr) throw tutErr;
       if (savedTutor?.id) setTutorId(savedTutor.id);
 
-      await supabase.from('profiles').upsert({
-        user_id: user.id,
-        full_name: user.name,
-        role: 'tutor'
-      });
+      await supabase.from('profiles').upsert(
+        {
+          user_id: user.id,
+          full_name: user.name,
+          role: 'tutor'
+        },
+        { onConflict: 'user_id' }
+      );
 
       setProfileSuccessMsg(t('Profile updated successfully!', 'تم تحديث الملف الشخصي بنجاح!', 'Profil mis à jour!'));
       setTimeout(() => {
@@ -180,14 +193,17 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     }
 
     if (!realTutorId && user?.id) {
-      const { data: createdTutor } = await supabase.from('tutors').upsert({
-        user_id: user.id,
-        name: user.name,
-        bio: editBio || 'Tutor Profile',
-        hourly_rate: Number(editHourlyRate) || 1500,
-        category: editCategory || 'General',
-        status: status || 'pending'
-      }).select('id').maybeSingle();
+      const { data: createdTutor } = await supabase.from('tutors').upsert(
+        {
+          user_id: user.id,
+          name: user.name,
+          bio: editBio || 'Tutor Profile',
+          hourly_rate: Number(editHourlyRate) || 1500,
+          category: editCategory || 'General',
+          status: 'pending'
+        },
+        { onConflict: 'user_id' }
+      ).select('id').maybeSingle();
       if (createdTutor?.id) {
         realTutorId = createdTutor.id;
         setTutorId(realTutorId);
@@ -318,85 +334,123 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     }
   };
 
-  useEffect(() => {
-    supabase
+  const loadTutorData = useCallback(async () => {
+    if (!user?.id) return;
+    const { data, error } = await supabase
       .from('tutors')
       .select('id, status, rating, review_count')
       .eq('user_id', user.id)
-      .single()
-      .then(async ({ data }) => {
-        if (data) {
-          setTutorId(data.id);
-          setStatus(data.status);
-          if (data.rating) setDbRating(Number(data.rating));
-          if (data.review_count) setDbReviewCount(Number(data.review_count));
-          
-          const { data: scheds } = await supabase
-            .from('schedules')
-            .select('*')
-            .eq('tutor_id', data.id);
-          if (scheds) {
-            setDbSchedules(scheds);
-          }
+      .maybeSingle();
 
-          const { data: sessData } = await supabase
-            .from('sessions')
-            .select('*')
-            .eq('tutor_id', data.id);
+    if (error) {
+      console.warn('Error loading tutor status:', error.message);
+      return;
+    }
 
-          const { data: qData } = await supabase
-            .from('questions')
-            .select('*')
-            .eq('tutor_id', data.id);
+    if (data) {
+      setTutorId(data.id);
+      setStatus((data.status || 'pending').toLowerCase());
+      setHasLoadedStatus(true);
+      if (data.rating) setDbRating(Number(data.rating));
+      if (data.review_count) setDbReviewCount(Number(data.review_count));
 
-          const studentIdsSet = new Set<string>();
-          if (sessData) {
-            sessData.forEach(s => studentIdsSet.add(s.student_id));
-          }
-          if (qData) {
-            qData.forEach(q => studentIdsSet.add(q.student_id));
-          }
-          const studentIds = Array.from(studentIdsSet);
+      const [{ data: scheds }, { data: sessData }, { data: qData }] = await Promise.all([
+        supabase.from('schedules').select('*').eq('tutor_id', data.id),
+        supabase.from('sessions').select('*').eq('tutor_id', data.id),
+        supabase.from('questions').select('*').eq('tutor_id', data.id)
+      ]);
 
-          let studentMapping: Record<string, string> = {};
-          if (studentIds.length > 0) {
-            const { data: profiles } = await supabase
-              .from('profiles')
-              .select('user_id, full_name')
-              .in('user_id', studentIds);
-            if (profiles) {
-              studentMapping = profiles.reduce((acc: any, curr: any) => {
-                acc[curr.user_id] = curr.full_name;
-                return acc;
-              }, {});
-              setStudentNames(studentMapping);
-            }
-          }
+      if (scheds) {
+        setDbSchedules(scheds);
+      }
 
-          if (sessData) {
-            setSessions(sessData);
-          }
+      const studentIdsSet = new Set<string>();
+      if (sessData) {
+        sessData.forEach(s => studentIdsSet.add(s.student_id));
+      }
+      if (qData) {
+        qData.forEach(q => studentIdsSet.add(q.student_id));
+      }
+      const studentIds = Array.from(studentIdsSet);
 
-          if (qData) {
-            const mappedQuestions = qData.map((q: any) => {
-              const name = studentMapping[q.student_id] || 'Student';
-              return {
-                id: q.id,
-                studentName: name,
-                studentAvatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=3B82F6&color=fff`,
-                subject: q.subject,
-                question: q.question,
-                answer: q.answer,
-                isAnswered: q.is_answered,
-                createdAt: q.created_at,
-                answeredAt: q.answered_at
-              };
-            });
-            setQuestions(mappedQuestions);
-          }
+      let studentMapping: Record<string, string> = {};
+      if (studentIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('user_id, full_name')
+          .in('user_id', studentIds);
+        if (profiles) {
+          studentMapping = profiles.reduce((acc: any, curr: any) => {
+            acc[curr.user_id] = curr.full_name;
+            return acc;
+          }, {});
+          setStudentNames(studentMapping);
         }
-      });
+      }
+
+      if (sessData) {
+        setSessions(sessData);
+      }
+
+      if (qData) {
+        const mappedQuestions = qData.map((q: any) => {
+          const name = studentMapping[q.student_id] || 'Student';
+          return {
+            id: q.id,
+            studentName: name,
+            studentAvatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=3B82F6&color=fff`,
+            subject: q.subject,
+            question: q.question,
+            answer: q.answer,
+            isAnswered: q.is_answered,
+            createdAt: q.created_at,
+            answeredAt: q.answered_at
+          };
+        });
+        setQuestions(mappedQuestions);
+      }
+    }
   }, [user.id]);
+
+  useEffect(() => {
+    loadTutorData();
+
+    // Realtime subscription for instant approval propagation & session updates
+    const tutorChannel = supabase
+      .channel(`tutor-status-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tutors', filter: `user_id=eq.${user.id}` },
+        (payload: any) => {
+          if (payload?.new?.status) {
+            setStatus(String(payload.new.status).toLowerCase());
+            setHasLoadedStatus(true);
+          }
+          loadTutorData();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'sessions' },
+        () => {
+          loadTutorData();
+        }
+      )
+      .subscribe();
+
+    const onFocus = () => loadTutorData();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') loadTutorData();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      supabase.removeChannel(tutorChannel);
+    };
+  }, [user.id, loadTutorData]);
 
   const t = (en: string, ar: string, fr?: string) => {
     if (language === 'ar') return ar;
@@ -482,7 +536,9 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
       status: s.status
     }));
 
-  const isApprovedByAdmin = status === 'approved' || profile?.status === 'approved';
+  const isApprovedByAdmin = hasLoadedStatus
+    ? status === 'approved'
+    : (status === 'approved' || profile?.status === 'approved');
 
   const handleStartLesson = async (sessionId: string, liveRoomId?: string) => {
     if (!isApprovedByAdmin) {
@@ -494,12 +550,22 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
       return;
     }
 
-    const roomId = liveRoomId || `teachme-room-${sessionId.slice(0, 8)}`;
+    // Preserve the session's UUID live_room_id so student & tutor join the exact same room
+    let roomId = liveRoomId || sessionId;
     try {
-      await supabase
+      const { data: updatedSess, error: updateErr } = await supabase
         .from('sessions')
-        .update({ status: 'live', live_room_id: roomId })
-        .eq('id', sessionId);
+        .update({ status: 'live' })
+        .eq('id', sessionId)
+        .select('live_room_id')
+        .maybeSingle();
+
+      if (updateErr) {
+        console.warn('Notice updating session status to live:', updateErr.message);
+      } else if (updatedSess?.live_room_id) {
+        roomId = updatedSess.live_room_id;
+        setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, status: 'live' } : s)));
+      }
     } catch (e) {
       console.warn('Notice updating session status:', e);
     }
@@ -520,24 +586,35 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     if (!realId && user?.id) {
       const { data: tData } = await supabase.from('tutors').select('id').eq('user_id', user.id).maybeSingle();
       realId = tData?.id || null;
+      if (realId) setTutorId(realId);
     }
-    const roomId = `teachme-zoom-${realId ? realId.slice(0, 8) : user.id.slice(0, 8)}`;
-    
+
+    let roomId = `teachme-zoom-${realId ? realId.slice(0, 8) : user.id.slice(0, 8)}`;
+
     if (realId) {
       try {
         const { data: activeSess } = await supabase
           .from('sessions')
-          .select('id')
+          .select('id, live_room_id')
           .eq('tutor_id', realId)
+          .in('status', ['confirmed', 'live'])
           .order('date', { ascending: true })
           .limit(1)
           .maybeSingle();
 
         if (activeSess?.id) {
-          await supabase
+          const { error: liveErr } = await supabase
             .from('sessions')
-            .update({ status: 'live', live_room_id: roomId })
+            .update({ status: 'live' })
             .eq('id', activeSess.id);
+          if (liveErr) {
+            console.warn('Notice setting session live:', liveErr.message);
+          } else {
+            setSessions(prev => prev.map(s => (s.id === activeSess.id ? { ...s, status: 'live' } : s)));
+          }
+          if (activeSess.live_room_id) {
+            roomId = activeSess.live_room_id;
+          }
         }
       } catch (_) {}
     }

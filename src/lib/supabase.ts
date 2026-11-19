@@ -38,6 +38,13 @@ export type Database = {
           is_online: boolean;
           response_time: string;
           is_verified: boolean;
+          status: 'pending' | 'approved' | 'rejected' | 'info_requested' | 'suspended' | 'banned';
+          email: string | null;
+          phone: string | null;
+          id_document_url: string | null;
+          certificates: string[] | null;
+          identity_verified: boolean;
+          meeting_settings: Record<string, any> | null;
           category: string;
           created_at: string;
         };
@@ -94,7 +101,7 @@ export type Database = {
           id: string;
           user_id: string;
           full_name: string;
-          role: 'student' | 'tutor';
+          role: 'student' | 'tutor' | 'admin';
           avatar_url: string | null;
           created_at: string;
         };
@@ -110,8 +117,10 @@ export type Database = {
           date: string;
           start_time: string;
           end_time: string;
-          status: 'confirmed' | 'cancelled' | 'completed' | 'missed';
+          status: 'confirmed' | 'live' | 'cancelled' | 'completed' | 'missed';
           credit_cost: number;
+          live_room_id: string;
+          subject: string | null;
           created_at: string;
         };
         Insert: Omit<Database['public']['Tables']['sessions']['Row'], 'id' | 'created_at'>;

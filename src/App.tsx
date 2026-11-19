@@ -32,6 +32,51 @@ export default function App() {
   );
 
   const [initialAuthBanner, setInitialAuthBanner] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
+  const [pendingRoomId, setPendingRoomId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const fromQuery = new URLSearchParams(window.location.search).get('room');
+    if (fromQuery) {
+      sessionStorage.setItem('tm_pending_room_id', fromQuery);
+      return fromQuery;
+    }
+    return sessionStorage.getItem('tm_pending_room_id');
+  });
+
+  const isAdminEmail = (email?: string | null) => {
+    const normalized = (email || '').trim().toLowerCase();
+    const envAdmin = (import.meta.env.VITE_ADMIN_EMAIL || 'admin@demo.com').trim().toLowerCase();
+    return normalized === envAdmin || normalized === 'admin@teachme.dz';
+  };
+
+  const isTutorProfileComplete = (tutor: any) =>
+    Boolean(
+      tutor?.id &&
+      (
+        (tutor.category && String(tutor.category).trim() !== '') ||
+        (Array.isArray(tutor.subjects) && tutor.subjects.length > 0) ||
+        tutor.status === 'approved'
+      )
+    );
+
+  const mapDbTutorToProfile = (tutor: any): TutorProfile => ({
+    name: tutor.name,
+    nameAr: tutor.name_ar || tutor.name || '',
+    bio: tutor.bio || '',
+    bioAr: tutor.bio_ar || '',
+    subjects: tutor.subjects || [],
+    hourlyRate: Number(tutor.hourly_rate || 0),
+    experienceYears: tutor.experience_years || 0,
+    languages: tutor.languages || [],
+    videoUrl: tutor.video_url || '',
+    schedule: [],
+    category: tutor.category || '',
+    status: tutor.status || 'pending',
+    certificates: tutor.certificates || [],
+    identityVerified: tutor.identity_verified || false,
+    avatarUrl: tutor.avatar_url || '',
+    idDocumentUrl: tutor.id_document_url || '',
+    meetingSettings: tutor.meeting_settings || undefined
+  });
 
   useEffect(() => {
     localStorage.setItem('tm_lang', language);
@@ -44,12 +89,22 @@ export default function App() {
       const hash = window.location.hash;
       const search = window.location.search;
 
+      const searchParams = new URLSearchParams(search);
+      const hashParams = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
+      const oauthErrorDesc = searchParams.get('error_description') || hashParams.get('error_description') || searchParams.get('error') || hashParams.get('error');
+
       if (search.includes('error_code=otp_expired') || hash.includes('error_code=otp_expired') || search.includes('expired') || hash.includes('expired')) {
         setInitialAuthBanner({
           type: 'warning',
           message: language === 'ar'
             ? 'رابط تفعيل البريد الإلكتروني انتهت صلاحيته. يرجى إدخال بريدك والنقر على "إعادة إرسال رابط التفعيل".'
             : 'Your email verification link has expired. Please enter your email and click "Resend Verification Email".'
+        });
+        window.history.replaceState(null, '', window.location.pathname);
+      } else if (oauthErrorDesc) {
+        setInitialAuthBanner({
+          type: 'error',
+          message: decodeURIComponent(oauthErrorDesc.replace(/\+/g, ' '))
         });
         window.history.replaceState(null, '', window.location.pathname);
       } else if (hash.includes('type=recovery') || search.includes('type=recovery')) {
@@ -116,50 +171,43 @@ export default function App() {
     const initAuth = async () => {
       authLog('Starting initAuth execution...');
       try {
-        if (typeof window !== 'undefined') {
-          const search = window.location.search;
-          const hash = window.location.hash;
-          authLog(`Checking current window location. Search: "${search}", Hash: "${hash}"`);
+        // First let Supabase detectSessionInUrl / persisted session resolve without racing
+        authLog('Querying supabase.auth.getSession()...');
+        let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          authLog(`getSession error notice: ${sessionError.message}`);
+        }
 
-          const urlParams = new URLSearchParams(search);
+        if (!session && typeof window !== 'undefined') {
+          const urlParams = new URLSearchParams(window.location.search);
           const code = urlParams.get('code');
-
           if (code) {
-            authLog(`OAuth authorization code found in URL ("${code}"). Exchanging code for session...`);
+            authLog('OAuth authorization code found without active session. Exchanging code for session...');
             const { data, error } = await supabase.auth.exchangeCodeForSession(code);
             if (error) {
-              authLog(`exchangeCodeForSession notice: ${error.message} (Will fallback to getSession)`);
-            } else if (data?.session?.user) {
-              authLog(`Successfully exchanged PKCE code for user session: ${data.session.user.id}`);
-              await handleSessionUser(data.session.user);
-              setIsAuthLoading(false);
-              clearTimeout(loadingTimeout);
-              window.history.replaceState(null, '', window.location.pathname);
-              return;
+              authLog(`exchangeCodeForSession notice: ${error.message}`);
+            } else if (data?.session) {
+              session = data.session;
             }
-            window.history.replaceState(null, '', window.location.pathname);
           }
         }
 
-        // Fetch Supabase session
-        authLog('Querying supabase.auth.getSession()...');
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          authLog(`getSession error notice: ${sessionError.message}`);
+        if (typeof window !== 'undefined' && (window.location.hash.includes('access_token=') || window.location.search.includes('code='))) {
+          window.history.replaceState(null, '', window.location.pathname);
         }
 
         if (session?.user) {
           authLog(`Active Supabase session retrieved for user: ${session.user.id}`);
           await handleSessionUser(session.user);
-        } else if (hasLocalSession) {
-          authLog('No active Supabase session, using saved local user session');
         } else {
+          // Clear any stale localStorage session that has no valid Supabase JWT
+          if (hasLocalSession) {
+            authLog('No active Supabase JWT session found; clearing stale local session.');
+            localStorage.removeItem('tm_user_session');
+            setUser(null);
+          }
           authLog('No session found. Directing to Sign In page');
           setAppState('auth');
-        }
-
-        if (typeof window !== 'undefined' && (window.location.hash.includes('access_token=') || window.location.search.includes('code='))) {
-          window.history.replaceState(null, '', window.location.pathname);
         }
       } catch (err: any) {
         authLog(`initAuth exception caught: ${err?.message || err}`);
@@ -201,144 +249,127 @@ export default function App() {
     authLog(`handleSessionUser processing for user: ${authUser.id} (${authUser.email})`);
 
     const pendingRole = localStorage.getItem('tm_pending_oauth_role') as 'student' | 'tutor' | 'admin' | null;
-    const userRole: 'student' | 'tutor' | 'admin' =
-      pendingRole || (authUser.user_metadata?.role as any) || 'student';
+    const defaultName =
+      authUser.user_metadata?.full_name ||
+      authUser.user_metadata?.name ||
+      authUser.email?.split('@')[0] ||
+      'User';
 
-    const defaultName = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'User';
-
-    const initialUser: User = {
-      id: authUser.id,
-      name: defaultName,
-      email: authUser.email || '',
-      role: userRole
+    const fastFetch = <T,>(p: PromiseLike<T>, ms = 3000): Promise<T> => {
+      return Promise.race([
+        Promise.resolve(p),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), ms))
+      ]);
     };
 
-    // INSTANT UNLOCK & NAVIGATION: 0ms wait time
-    authLog(`Instantly unlocking dashboard for role "${userRole}"...`);
-    localStorage.setItem('tm_user_session', JSON.stringify(initialUser));
-    setUser(initialUser);
-    setIsAuthLoading(false);
+    let profile: any = null;
+    let tutorRow: any = null;
 
-    if (userRole === 'admin') {
-      setAppState('admin-dashboard');
-    } else if (userRole === 'student') {
-      setAppState('student-app');
-    } else {
-      // Check if tutor is already registered to avoid temporary flickering to register screen
-      const isLocallyRegistered = localStorage.getItem(`tm_tutor_reg_${authUser.id}`) === 'true';
-      if (isLocallyRegistered) {
-        setAppState('tutor-dashboard');
-      } else {
-        try {
-          const { data: quickTutor } = await supabase
-            .from('tutors')
-            .select('id')
-            .eq('user_id', authUser.id)
-            .maybeSingle();
-
-          if (quickTutor?.id) {
-            localStorage.setItem(`tm_tutor_reg_${authUser.id}`, 'true');
-            setAppState('tutor-dashboard');
-          } else {
-            setAppState('tutor-register');
-          }
-        } catch (_) {
-          setAppState('tutor-register');
-        }
-      }
-    }
-
-    // Background profile & tutor sync
     try {
-      const fastFetch = <T,>(p: PromiseLike<T>, ms = 1500): Promise<T> => {
-        return Promise.race([
-          Promise.resolve(p),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), ms))
-        ]);
-      };
-
-      let profile: any = null;
-      try {
-        const { data: profData } = await fastFetch(
+      const [{ data: profData }, { data: tutData }] = await Promise.all([
+        fastFetch(
           supabase
             .from('profiles')
-            .select('full_name, role')
+            .select('full_name, role, avatar_url')
             .eq('user_id', authUser.id)
-            .maybeSingle(),
-          1500
-        );
-        if (profData) profile = profData;
-      } catch (_) {}
+            .maybeSingle()
+        ).catch(() => ({ data: null } as any)),
+        fastFetch(
+          supabase
+            .from('tutors')
+            .select('*')
+            .eq('user_id', authUser.id)
+            .maybeSingle()
+        ).catch(() => ({ data: null } as any))
+      ]);
+      profile = profData;
+      tutorRow = tutData;
+    } catch (_) {}
 
-      if (pendingRole) {
-        try {
-          await supabase.from('profiles').upsert({
-            user_id: authUser.id,
-            full_name: defaultName,
-            role: pendingRole
-          });
-        } catch (_) {}
-        localStorage.removeItem('tm_pending_oauth_role');
-      }
-
-      let registered = false;
-      let tProfile: TutorProfile | null = null;
-
-      if (userRole === 'tutor') {
-        try {
-          const { data: tutor } = await fastFetch(
-            supabase
-              .from('tutors')
-              .select('*')
-              .eq('user_id', authUser.id)
-              .maybeSingle(),
-            1500
-          );
-
-          if (tutor) {
-            registered = true;
-            tProfile = {
-              name: tutor.name,
-              nameAr: tutor.name_ar,
-              bio: tutor.bio,
-              bioAr: tutor.bio_ar,
-              subjects: tutor.subjects || [],
-              hourlyRate: Number(tutor.hourly_rate || 0),
-              experienceYears: tutor.experience_years || 0,
-              languages: tutor.languages || [],
-              videoUrl: tutor.video_url || '',
-              schedule: [],
-              category: tutor.category || '',
-              status: tutor.status || 'pending',
-              certificates: tutor.certificates || [],
-              identityVerified: tutor.identity_verified || false
-            };
-            setAppState('tutor-dashboard');
-          } else {
-            setAppState('tutor-register');
-          }
-        } catch (_) {
-          setAppState('tutor-register');
-        }
-      }
-
-      const updatedUser: User = {
-        id: authUser.id,
-        name: profile?.full_name || defaultName,
-        email: authUser.email || '',
-        role: (profile?.role as any) || userRole
-      };
-
-      localStorage.setItem('tm_user_session', JSON.stringify(updatedUser));
-      setUser(updatedUser);
-      setTutorRegistered(registered);
-      if (tProfile) setTutorProfile(tProfile);
-
-      trackEvent('user_session_active', { role: updatedUser.role, user_id: updatedUser.id });
-      requestNotificationPermission().catch(() => {});
-    } catch (err: any) {
-      authLog(`Background handleSessionUser notice: ${err?.message || err}`);
+    // Determine authoritative role without demoting existing admins or tutors
+    let resolvedRole: 'student' | 'tutor' | 'admin';
+    if (isAdminEmail(authUser.email) || profile?.role === 'admin') {
+      resolvedRole = 'admin';
+    } else if (tutorRow?.id || profile?.role === 'tutor') {
+      resolvedRole = 'tutor';
+    } else if (pendingRole === 'tutor' || authUser.user_metadata?.role === 'tutor') {
+      resolvedRole = 'tutor';
+    } else {
+      resolvedRole = 'student';
     }
+
+    // Ensure profiles row exists (and update brand-new Google tutor role if selected)
+    if (!profile || (pendingRole === 'tutor' && profile.role === 'student' && !tutorRow?.id)) {
+      try {
+        await supabase.from('profiles').upsert(
+          {
+            user_id: authUser.id,
+            full_name: profile?.full_name || defaultName,
+            role: resolvedRole,
+            avatar_url: profile?.avatar_url || authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null
+          },
+          { onConflict: 'user_id' }
+        );
+      } catch (_) {}
+    }
+
+    // Ensure a pending tutors row exists for brand-new Google tutors immediately
+    if (resolvedRole === 'tutor' && !tutorRow?.id) {
+      try {
+        const { data: createdTutor } = await supabase
+          .from('tutors')
+          .upsert(
+            {
+              user_id: authUser.id,
+              name: profile?.full_name || defaultName,
+              name_ar: profile?.full_name || defaultName,
+              email: authUser.email || null,
+              avatar_url: authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null,
+              status: 'pending',
+              is_verified: false
+            },
+            { onConflict: 'user_id' }
+          )
+          .select('*')
+          .maybeSingle();
+        if (createdTutor) tutorRow = createdTutor;
+      } catch (_) {}
+    }
+
+    if (pendingRole) {
+      localStorage.removeItem('tm_pending_oauth_role');
+    }
+
+    const updatedUser: User = {
+      id: authUser.id,
+      name: profile?.full_name || defaultName,
+      email: authUser.email || '',
+      role: resolvedRole
+    };
+
+    localStorage.setItem('tm_user_session', JSON.stringify(updatedUser));
+    setUser(updatedUser);
+    setIsAuthLoading(false);
+
+    if (resolvedRole === 'admin') {
+      setAppState('admin-dashboard');
+    } else if (resolvedRole === 'student') {
+      setAppState('student-app');
+    } else {
+      if (isTutorProfileComplete(tutorRow)) {
+        localStorage.setItem(`tm_tutor_reg_${authUser.id}`, 'true');
+        setTutorRegistered(true);
+        setTutorProfile(mapDbTutorToProfile(tutorRow));
+        setAppState('tutor-dashboard');
+      } else {
+        setTutorRegistered(false);
+        if (tutorRow) setTutorProfile(mapDbTutorToProfile(tutorRow));
+        setAppState('tutor-register');
+      }
+    }
+
+    trackEvent('user_session_active', { role: updatedUser.role, user_id: updatedUser.id });
+    requestNotificationPermission().catch(() => {});
   };
 
   const handleAuth = async (u: User) => {
@@ -356,33 +387,24 @@ export default function App() {
       const { data: tutor } = await supabase
         .from('tutors')
         .select('*')
-        .or(`user_id.eq.${u.id},id.eq.${u.id}`)
+        .eq('user_id', u.id)
         .maybeSingle();
 
       if (tutor?.id) {
         authLog(`Found existing tutor profile for user ${u.id}:`, tutor.name);
-        localStorage.setItem(`tm_tutor_reg_${u.id}`, 'true');
         const updatedUser: User = { ...u, role: 'tutor' };
         setUser(updatedUser);
         localStorage.setItem('tm_user_session', JSON.stringify(updatedUser));
-        setTutorRegistered(true);
-        setTutorProfile({
-          name: tutor.name,
-          nameAr: tutor.name_ar,
-          bio: tutor.bio,
-          bioAr: tutor.bio_ar,
-          subjects: tutor.subjects || [],
-          hourlyRate: Number(tutor.hourly_rate || 0),
-          experienceYears: tutor.experience_years || 0,
-          languages: tutor.languages || [],
-          videoUrl: tutor.video_url || '',
-          schedule: [],
-          category: tutor.category || '',
-          status: tutor.status || 'pending',
-          certificates: tutor.certificates || [],
-          identityVerified: tutor.identity_verified || false
-        });
-        setAppState('tutor-dashboard');
+        setTutorProfile(mapDbTutorToProfile(tutor));
+
+        if (isTutorProfileComplete(tutor)) {
+          localStorage.setItem(`tm_tutor_reg_${u.id}`, 'true');
+          setTutorRegistered(true);
+          setAppState('tutor-dashboard');
+        } else {
+          setTutorRegistered(false);
+          setAppState('tutor-register');
+        }
         return;
       }
     } catch (e) {
@@ -399,31 +421,36 @@ export default function App() {
 
   const handleTutorComplete = async (profile: TutorProfile) => {
     if (!user) return;
-    
-    // 1. Upsert tutor application into tutors table
+
+    // 1. Upsert tutor application into tutors table (conflict on user_id preserves existing pending row)
     const { data: tutorData, error: tutorError } = await supabase
       .from('tutors')
-      .upsert({
-        user_id: user.id,
-        name: profile.name,
-        name_ar: profile.nameAr || profile.name,
-        bio: profile.bio,
-        bio_ar: profile.bioAr || profile.bio,
-        subjects: profile.subjects,
-        hourly_rate: profile.hourlyRate,
-        experience_years: profile.experienceYears || 5,
-        languages: profile.languages,
-        category: profile.category,
-        is_online: true,
-        response_time: 'within an hour',
-        is_verified: false,
-        status: 'pending',
-        certificates: profile.certificates || [],
-        identity_verified: profile.identityVerified || false,
-        avatar_url: profile.avatarUrl || null,
-        id_document_url: profile.idDocumentUrl || null,
-        meeting_settings: profile.meetingSettings || null
-      })
+      .upsert(
+        {
+          user_id: user.id,
+          name: profile.name,
+          name_ar: profile.nameAr || profile.name,
+          email: user.email || null,
+          bio: profile.bio,
+          bio_ar: profile.bioAr || profile.bio,
+          subjects: profile.subjects,
+          hourly_rate: profile.hourlyRate,
+          experience_years: profile.experienceYears || 5,
+          languages: profile.languages,
+          category: profile.category,
+          video_url: profile.videoUrl || null,
+          is_online: true,
+          response_time: 'within an hour',
+          is_verified: false,
+          status: 'pending',
+          certificates: profile.certificates || [],
+          identity_verified: profile.identityVerified || false,
+          avatar_url: profile.avatarUrl || null,
+          id_document_url: profile.idDocumentUrl || null,
+          meeting_settings: profile.meetingSettings || null
+        },
+        { onConflict: 'user_id' }
+      )
       .select()
       .maybeSingle();
 
@@ -439,12 +466,15 @@ export default function App() {
     // 2. Ensure user profile role is set to tutor in profiles table
     const { error: profileUpdateError } = await supabase
       .from('profiles')
-      .upsert({
-        user_id: user.id,
-        full_name: user.name,
-        role: 'tutor',
-        avatar_url: profile.avatarUrl || null
-      });
+      .upsert(
+        {
+          user_id: user.id,
+          full_name: profile.name || user.name,
+          role: 'tutor',
+          avatar_url: profile.avatarUrl || null
+        },
+        { onConflict: 'user_id' }
+      );
 
     if (profileUpdateError) {
       console.warn('Profiles role update warning:', profileUpdateError.message);
@@ -513,7 +543,7 @@ export default function App() {
   }
 
   if (appState === 'auth') {
-    return <AuthScreen onAuth={handleAuth} language={language} onChangeLanguage={setLanguage} />;
+    return <AuthScreen onAuth={handleAuth} language={language} onChangeLanguage={setLanguage} initialBanner={initialAuthBanner} />;
   }
 
   if (appState === 'tutor-register' && user) {
@@ -549,6 +579,14 @@ export default function App() {
           language={language}
           onChangeLanguage={setLanguage}
           onOpenSetPassword={() => setIsSetPasswordOpen(true)}
+          initialRoomId={pendingRoomId}
+          onConsumeInitialRoom={() => {
+            setPendingRoomId(null);
+            sessionStorage.removeItem('tm_pending_room_id');
+            if (typeof window !== 'undefined' && window.location.search.includes('room=')) {
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+          }}
         />
         <SetPasswordModal
           isOpen={isSetPasswordOpen}

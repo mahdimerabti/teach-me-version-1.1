@@ -594,7 +594,13 @@ export default function LiveMeetingRoom({
   };
 
   const copyRoomCode = () => {
-    navigator.clipboard?.writeText(roomId).catch(() => {});
+    const shareUrl =
+      typeof window !== 'undefined' && window.location?.origin
+        ? `${window.location.origin}/?room=${encodeURIComponent(roomId)}`
+        : roomId;
+    navigator.clipboard?.writeText(shareUrl).catch(() => {
+      navigator.clipboard?.writeText(roomId).catch(() => {});
+    });
     setCopiedRoomId(true);
     setTimeout(() => setCopiedRoomId(false), 2000);
   };

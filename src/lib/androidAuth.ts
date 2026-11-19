@@ -26,19 +26,54 @@ export const isAndroidNative = (): boolean => {
 
 /**
  * Returns a valid, safe redirect URL that will NEVER be file:// or null.
+ * In Capacitor/Android native shells, always returns the custom deep-link scheme
+ * so OAuth returns directly into the app instead of staying in an external browser.
  */
 export const getSafeRedirectUrl = (): string => {
   if (typeof window === 'undefined') return PRODUCTION_WEB_URL;
-  const origin = window.location.origin || '';
-  const protocol = window.location.protocol || '';
-  
-  if (protocol === 'file:' || origin === 'file://' || origin === 'null' || origin.startsWith('file:') || !origin) {
+
+  if (isAndroidNative()) {
     authLog(`Using Android deep-link redirect URI: ${ANDROID_OAUTH_REDIRECT_URI}`);
     return ANDROID_OAUTH_REDIRECT_URI;
   }
-  authLog(`Using Web redirect URI: ${origin}`);
-  return origin;
+
+  const origin = window.location.origin || '';
+  const protocol = window.location.protocol || '';
+  if (protocol === 'file:' || origin === 'file://' || origin === 'null' || origin.startsWith('file:') || !origin) {
+    authLog(`Using fallback production redirect URI: ${PRODUCTION_WEB_URL}`);
+    return PRODUCTION_WEB_URL;
+  }
+
+  const webRedirect = `${origin}/`;
+  authLog(`Using Web redirect URI: ${webRedirect}`);
+  return webRedirect;
 };
+
+/**
+ * Lightweight preflight check to verify whether the Google OAuth provider is enabled
+ * in Supabase Auth before redirecting away from the app.
+ */
+export async function checkGoogleProviderEnabled(): Promise<{ enabled: boolean; reason?: string }> {
+  try {
+    const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || 'https://azlvrrioyvqdlacjlbhs.supabase.co').replace(/\/$/, '');
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+    const res = await fetch(`${supabaseUrl}/auth/v1/settings`, {
+      headers: supabaseAnonKey ? { apikey: supabaseAnonKey } : undefined
+    });
+    if (!res.ok) return { enabled: true };
+    const settings = await res.json();
+    if (settings?.external && settings.external.google === false) {
+      return {
+        enabled: false,
+        reason: 'Google Sign-In is not yet enabled in Supabase Authentication → Providers → Google.'
+      };
+    }
+    return { enabled: true };
+  } catch (_) {
+    // Do not block OAuth if settings check fails due to transient network/CORS issue
+    return { enabled: true };
+  }
+}
 
 /**
  * Handles incoming deep link URL (e.g., com.teachme.app://google-auth?code=... or #access_token=...)
@@ -90,6 +125,11 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
     authLog(`Starting Android Google Sign-In with role: ${role}`);
     localStorage.setItem('tm_pending_oauth_role', role);
 
+    const providerStatus = await checkGoogleProviderEnabled();
+    if (!providerStatus.enabled) {
+      return { success: false, error: providerStatus.reason };
+    }
+
     const redirectUri = getSafeRedirectUrl();
 
     const { data, error } = await supabase.auth.signInWithOAuth({
@@ -97,7 +137,10 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
       options: {
         redirectTo: redirectUri,
         skipBrowserRedirect: true,
-        queryParams: { role }
+        queryParams: {
+          prompt: 'select_account',
+          access_type: 'offline'
+        }
       }
     });
 
@@ -129,8 +172,8 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
         }
       });
 
-      authLog('Opening Chrome Custom Tab for OAuth');
-      await Browser.open({ url: data.url });
+      authLog('Opening in-app Chrome Custom Tab for OAuth');
+      await Browser.open({ url: data.url, presentationStyle: 'popover' });
       return { success: true };
     } catch (pluginErr) {
       authLog(`Capacitor plugin open fallback: ${pluginErr}`);
