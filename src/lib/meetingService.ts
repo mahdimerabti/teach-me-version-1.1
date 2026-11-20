@@ -29,7 +29,11 @@ export type WhiteboardStrokePayload = {
 
 export type WhiteboardSyncEvent =
   | { type: 'stroke'; stroke: WhiteboardStrokePayload }
+  | { type: 'undo'; strokeId: string; senderId: string }
+  | { type: 'redo'; strokeId: string; senderId: string }
   | { type: 'clear'; senderId: string }
+  | { type: 'sync-history'; strokes: WhiteboardStrokePayload[] }
+  | { type: 'permission'; targetUserId: string; canDraw: boolean; senderId: string }
   | { type: 'material'; materialId: string; customImageUrl?: string; senderId: string }
   | { type: 'viewport'; scale: number; position: { x: number; y: number }; senderId: string }
   | { type: 'laser'; x: number; y: number; visible: boolean; senderName: string; senderId: string };
@@ -39,6 +43,7 @@ export type RoomParticipantState = {
   displayName: string;
   avatarUrl?: string;
   role: 'host' | 'student';
+  canDraw?: boolean;
   isMuted: boolean;
   isCameraOff: boolean;
   isHandRaised: boolean;
@@ -203,6 +208,7 @@ export interface RoomControllerCallbacks {
   onRemoteStreamChanged: (peerId: string, stream: MediaStream | null) => void;
   onChatMessage: (msg: RoomChatMessage) => void;
   onWhiteboardSync: (event: WhiteboardSyncEvent) => void;
+  onDrawingPermissionsChanged?: (allowedUserIds: string[]) => void;
   onActiveModeChanged: (mode: 'video' | 'whiteboard' | 'screenshare') => void;
   onHostCommand: (command: { type: 'mute-all' | 'mute-user' | 'lower-hand' | 'end-room'; targetUserId?: string }) => void;
   onReaction: (reaction: { id: string; emoji: string; senderName: string }) => void;
@@ -212,7 +218,7 @@ export interface RoomControllerCallbacks {
 /**
  * Clean-Room WebRTC + Supabase Realtime Room Session Controller.
  * Handles multi-peer WebRTC signaling (SDP Offer/Answer/ICE), Online Presence,
- * In-Room Chat persistence, Host Moderation, and Realtime Whiteboard synchronization.
+ * In-Room Chat persistence, Host Moderation, and Server-Enforced Realtime Whiteboard synchronization.
  */
 export class LiveRoomController {
   private roomId: string;
@@ -222,6 +228,8 @@ export class LiveRoomController {
   private peers = new Map<string, RTCPeerConnection>();
   private remoteStreams = new Map<string, MediaStream>();
   private participantsMap = new Map<string, RoomParticipantState>();
+  private allowedDrawers = new Set<string>();
+  private seenStrokeIds = new Set<string>();
   private localStream: MediaStream | null = null;
   private customVideoTrack: MediaStreamTrack | null = null;
   private pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
@@ -233,12 +241,17 @@ export class LiveRoomController {
     callbacks: RoomControllerCallbacks
   ) {
     this.roomId = generateSecureRoomName(roomId);
+    const initialCanDraw = localUser.role === 'host';
     this.localUser = {
       ...localUser,
+      canDraw: initialCanDraw,
       isOnline: true,
       joinedAt: new Date().toISOString()
     };
     this.callbacks = callbacks;
+    if (initialCanDraw) {
+      this.allowedDrawers.add(this.localUser.userId);
+    }
     this.participantsMap.set(this.localUser.userId, this.localUser);
   }
 
@@ -250,7 +263,7 @@ export class LiveRoomController {
     this.localStream = initialStream;
     this.callbacks.onConnectionStateChanged('connecting');
 
-    // 1. Register room & participant in Supabase DB (non-blocking fallback for guest/demo users)
+    // 1. Register room & participant in Supabase DB first, then load persisted state
     Promise.resolve(
       ensureLiveRoomRemote(
         this.roomId,
@@ -258,12 +271,16 @@ export class LiveRoomController {
         this.localUser.role,
         this.localUser.avatarUrl
       )
-    ).catch(() => {});
+    )
+      .catch(() => {})
+      .finally(() => {
+        if (!this.isDestroyed) {
+          this.loadExistingMessages().catch(() => {});
+          this.loadInitialWhiteboardState().catch(() => {});
+        }
+      });
 
-    // 2. Load recent chat messages from public.room_messages
-    this.loadExistingMessages().catch(() => {});
-
-    // 3. Subscribe to Supabase Realtime Channel for Presence + Broadcast Signaling + Chat
+    // 2. Subscribe to Supabase Realtime Channel for Presence + Broadcast Signaling + Server DB Changes
     const channel = supabase.channel(`room:${this.roomId}`, {
       config: {
         presence: { key: this.localUser.userId },
@@ -278,14 +295,21 @@ export class LiveRoomController {
         if (this.isDestroyed) return;
         const state = channel.presenceState<RoomParticipantState>();
         const nextMap = new Map<string, RoomParticipantState>();
-        nextMap.set(this.localUser.userId, this.localUser);
+        nextMap.set(this.localUser.userId, {
+          ...this.localUser,
+          canDraw: this.isUserAllowedToDraw(this.localUser.userId)
+        });
 
         Object.entries(state).forEach(([peerId, presences]) => {
           if (presences && presences.length > 0) {
             const latest = presences[presences.length - 1];
+            if (latest.role === 'host') {
+              this.allowedDrawers.add(peerId);
+            }
             nextMap.set(peerId, {
               ...latest,
               userId: peerId,
+              canDraw: this.isUserAllowedToDraw(peerId),
               isOnline: true
             });
           }
@@ -293,6 +317,7 @@ export class LiveRoomController {
 
         this.participantsMap = nextMap;
         this.emitParticipants();
+        this.emitDrawingPermissions();
 
         // Initiate WebRTC offer to any newly discovered peers using deterministic tie-breaking
         for (const [peerId] of nextMap.entries()) {
@@ -313,7 +338,15 @@ export class LiveRoomController {
         if (this.isDestroyed || key === this.localUser.userId) return;
         if (newPresences && newPresences.length > 0) {
           const joined = newPresences[newPresences.length - 1] as unknown as RoomParticipantState;
-          this.participantsMap.set(key, { ...joined, userId: key, isOnline: true });
+          if (joined.role === 'host') {
+            this.allowedDrawers.add(key);
+          }
+          this.participantsMap.set(key, {
+            ...joined,
+            userId: key,
+            canDraw: this.isUserAllowedToDraw(key),
+            isOnline: true
+          });
           this.emitParticipants();
 
           // Always greet newly joined peer with an offer if not already connected
@@ -340,8 +373,88 @@ export class LiveRoomController {
       })
       .on('broadcast', { event: 'whiteboard-sync' }, ({ payload }) => {
         if (this.isDestroyed || !payload) return;
-        this.callbacks.onWhiteboardSync(payload as WhiteboardSyncEvent);
+        const ev = payload as WhiteboardSyncEvent;
+
+        // Handle teacher permission broadcast immediately
+        if (ev.type === 'permission') {
+          const sender = this.participantsMap.get(ev.senderId);
+          if (sender?.role !== 'host') return;
+          this.applyDrawPermissionLocal(ev.targetUserId, ev.canDraw);
+          return;
+        }
+
+        // Enforce receiver-side authorization on mutating whiteboard events
+        if (ev.type === 'stroke') {
+          if (!this.isUserAllowedToDraw(ev.stroke.senderId)) return;
+          if (this.seenStrokeIds.has(ev.stroke.id)) return;
+          this.seenStrokeIds.add(ev.stroke.id);
+        } else if (ev.type === 'clear' || ev.type === 'undo' || ev.type === 'redo') {
+          if (!this.isUserAllowedToDraw(ev.senderId)) return;
+        }
+
+        this.callbacks.onWhiteboardSync(ev);
       })
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'room_participants',
+          filter: `room_id=eq.${this.roomId}`
+        },
+        (payload: any) => {
+          if (this.isDestroyed) return;
+          const row = payload?.new;
+          if (!row?.user_id) return;
+          const granted = Boolean(row.can_draw) || row.role === 'host';
+          this.applyDrawPermissionLocal(row.user_id, granted);
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'whiteboard_strokes',
+          filter: `room_id=eq.${this.roomId}`
+        },
+        (payload: any) => {
+          if (this.isDestroyed) return;
+          if (payload.eventType === 'INSERT' && payload.new) {
+            const row = payload.new;
+            if (row.sender_id === this.localUser.userId || this.seenStrokeIds.has(row.id)) return;
+            this.seenStrokeIds.add(row.id);
+            this.callbacks.onWhiteboardSync({
+              type: 'stroke',
+              stroke: {
+                id: row.id,
+                mode: row.mode === 'erase' ? 'erase' : 'draw',
+                color: row.color || '#0F172A',
+                width: Number(row.width || 3),
+                points: Array.isArray(row.points) ? row.points : [],
+                senderId: row.sender_id
+              }
+            });
+          } else if (payload.eventType === 'UPDATE' && payload.new) {
+            const row = payload.new;
+            if (row.is_undone) {
+              this.callbacks.onWhiteboardSync({
+                type: 'undo',
+                strokeId: row.id,
+                senderId: row.sender_id
+              });
+            } else {
+              this.callbacks.onWhiteboardSync({
+                type: 'redo',
+                strokeId: row.id,
+                senderId: row.sender_id
+              });
+            }
+          } else if (payload.eventType === 'DELETE') {
+            this.loadExistingWhiteboardStrokes().catch(() => {});
+          }
+        }
+      )
       .on('broadcast', { event: 'active-mode' }, ({ payload }) => {
         if (this.isDestroyed || !payload?.mode) return;
         this.callbacks.onActiveModeChanged(payload.mode);
@@ -623,13 +736,191 @@ export class LiveRoomController {
     return message;
   }
 
-  public broadcastWhiteboardEvent(event: WhiteboardSyncEvent): void {
-    if (!this.channel) return;
-    this.channel.send({
-      type: 'broadcast',
-      event: 'whiteboard-sync',
-      payload: event
+  public isUserAllowedToDraw(userId: string): boolean {
+    if (!userId) return false;
+    if (this.allowedDrawers.has(userId)) return true;
+    const p = this.participantsMap.get(userId);
+    return p?.role === 'host' || Boolean(p?.canDraw);
+  }
+
+  private applyDrawPermissionLocal(targetUserId: string, canDraw: boolean): void {
+    const existing = this.participantsMap.get(targetUserId);
+    const effective = existing?.role === 'host' ? true : Boolean(canDraw);
+
+    if (effective) {
+      this.allowedDrawers.add(targetUserId);
+    } else {
+      this.allowedDrawers.delete(targetUserId);
+    }
+
+    if (targetUserId === this.localUser.userId) {
+      this.localUser = { ...this.localUser, canDraw: effective };
+    }
+
+    if (existing) {
+      this.participantsMap.set(targetUserId, { ...existing, canDraw: effective });
+    }
+
+    this.emitParticipants();
+    this.emitDrawingPermissions();
+  }
+
+  private emitDrawingPermissions(): void {
+    this.callbacks.onDrawingPermissionsChanged?.(Array.from(this.allowedDrawers));
+  }
+
+  private async loadInitialWhiteboardState(): Promise<void> {
+    // 1. Hydrate server-side drawing permissions from public.room_participants
+    const { data: partRows } = await supabase
+      .from('room_participants')
+      .select('user_id, role, can_draw')
+      .eq('room_id', this.roomId);
+
+    if (partRows && !this.isDestroyed) {
+      for (const row of partRows) {
+        const allowed = row.role === 'host' || Boolean(row.can_draw);
+        if (allowed) {
+          this.allowedDrawers.add(row.user_id);
+        } else {
+          this.allowedDrawers.delete(row.user_id);
+        }
+        const existing = this.participantsMap.get(row.user_id);
+        if (existing) {
+          this.participantsMap.set(row.user_id, { ...existing, canDraw: allowed });
+        }
+        if (row.user_id === this.localUser.userId) {
+          this.localUser = { ...this.localUser, canDraw: allowed };
+        }
+      }
+      this.emitParticipants();
+      this.emitDrawingPermissions();
+    }
+
+    // 2. Hydrate persisted non-undone strokes from public.whiteboard_strokes
+    await this.loadExistingWhiteboardStrokes();
+  }
+
+  private async loadExistingWhiteboardStrokes(): Promise<void> {
+    const { data: strokeRows, error } = await supabase
+      .from('whiteboard_strokes')
+      .select('id, mode, color, width, points, sender_id')
+      .eq('room_id', this.roomId)
+      .eq('is_undone', false)
+      .order('created_at', { ascending: true })
+      .limit(500);
+
+    if (error || !strokeRows || this.isDestroyed) return;
+    const strokes: WhiteboardStrokePayload[] = strokeRows.map((row: any) => {
+      this.seenStrokeIds.add(row.id);
+      return {
+        id: row.id,
+        mode: row.mode === 'erase' ? 'erase' : 'draw',
+        color: row.color || '#0F172A',
+        width: Number(row.width || 3),
+        points: Array.isArray(row.points) ? row.points : [],
+        senderId: row.sender_id
+      };
     });
+    this.callbacks.onWhiteboardSync({ type: 'sync-history', strokes });
+  }
+
+  public async setStudentDrawPermission(targetUserId: string, canDraw: boolean): Promise<{ ok: boolean; error?: string }> {
+    if (this.localUser.role !== 'host') {
+      return { ok: false, error: 'forbidden' };
+    }
+
+    const { data, error } = await supabase.rpc('set_student_draw_permission', {
+      p_room_id: this.roomId,
+      p_target_user_id: targetUserId,
+      p_can_draw: canDraw
+    });
+
+    if (error || (data as any)?.error) {
+      return { ok: false, error: error?.message || (data as any)?.error };
+    }
+
+    this.applyDrawPermissionLocal(targetUserId, canDraw);
+
+    if (this.channel) {
+      this.channel.send({
+        type: 'broadcast',
+        event: 'whiteboard-sync',
+        payload: {
+          type: 'permission',
+          targetUserId,
+          canDraw,
+          senderId: this.localUser.userId
+        }
+      });
+    }
+
+    return { ok: true };
+  }
+
+  public async broadcastWhiteboardEvent(event: WhiteboardSyncEvent): Promise<boolean> {
+    // Reject unauthorized mutating whiteboard actions before persisting or broadcasting
+    if (event.type === 'stroke' || event.type === 'clear' || event.type === 'undo' || event.type === 'redo') {
+      if (!this.isUserAllowedToDraw(this.localUser.userId)) {
+        return false;
+      }
+
+      if (event.type === 'stroke') {
+        this.seenStrokeIds.add(event.stroke.id);
+        const { error } = await supabase.from('whiteboard_strokes').insert({
+          id: event.stroke.id,
+          room_id: this.roomId,
+          sender_id: this.localUser.userId,
+          mode: event.stroke.mode,
+          color: event.stroke.color,
+          width: event.stroke.width,
+          points: event.stroke.points,
+          is_undone: false
+        });
+        if (error) {
+          console.warn('Whiteboard stroke rejected by server RLS:', error.message);
+          return false;
+        }
+      } else if (event.type === 'undo') {
+        const { error } = await supabase
+          .from('whiteboard_strokes')
+          .update({ is_undone: true })
+          .eq('id', event.strokeId)
+          .eq('room_id', this.roomId);
+        if (error) {
+          console.warn('Whiteboard undo rejected by server RLS:', error.message);
+          return false;
+        }
+      } else if (event.type === 'redo') {
+        const { error } = await supabase
+          .from('whiteboard_strokes')
+          .update({ is_undone: false })
+          .eq('id', event.strokeId)
+          .eq('room_id', this.roomId);
+        if (error) {
+          console.warn('Whiteboard redo rejected by server RLS:', error.message);
+          return false;
+        }
+      } else if (event.type === 'clear') {
+        const { error } = await supabase
+          .from('whiteboard_strokes')
+          .delete()
+          .eq('room_id', this.roomId);
+        if (error) {
+          console.warn('Whiteboard clear rejected by server RLS:', error.message);
+          return false;
+        }
+        this.seenStrokeIds.clear();
+      }
+    }
+
+    if (this.channel) {
+      this.channel.send({
+        type: 'broadcast',
+        event: 'whiteboard-sync',
+        payload: event
+      });
+    }
+    return true;
   }
 
   public broadcastActiveMode(mode: 'video' | 'whiteboard' | 'screenshare'): void {
