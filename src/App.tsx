@@ -491,15 +491,25 @@ export default function App() {
       const DAY_MAP: Record<string, number> = {
         'Sunday': 0, 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6
       };
-      
-      const schedulesToInsert = profile.schedule.map(s => ({
-        tutor_id: tutorData.id,
-        day_of_week: DAY_MAP[s.day] ?? 1,
-        start_time: s.startTime + ':00',
-        end_time: s.endTime + ':00',
-        is_available: true
-      }));
 
+      const schedulesToInsert = profile.schedule
+        .map(s => {
+          const start = (s.startTime || '09:00').slice(0, 5);
+          let end = (s.endTime || '12:00').slice(0, 5);
+          if (end <= start) {
+            const startHour = Math.min(22, parseInt(start.split(':')[0] || '9', 10));
+            end = `${String(startHour + 1).padStart(2, '0')}:00`;
+          }
+          return {
+            tutor_id: tutorData.id,
+            day_of_week: DAY_MAP[s.day] ?? 1,
+            start_time: `${start}:00`,
+            end_time: `${end}:00`,
+            is_available: true
+          };
+        });
+
+      await supabase.from('schedules').delete().eq('tutor_id', tutorData.id);
       const { error: scheduleError } = await supabase
         .from('schedules')
         .insert(schedulesToInsert);

@@ -91,6 +91,8 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         const defaultName = form.name.trim() || trimmedEmail.split('@')[0];
         let userId = '';
 
+        let activeSession: any = null;
+
         const { data: signUpData, error: authError } = await supabase.auth.signUp({
           email: trimmedEmail,
           password: form.password,
@@ -103,8 +105,12 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           }
         });
 
-        if (authError) {
-          if (authError.message?.toLowerCase().includes('already registered') || authError.message?.toLowerCase().includes('already exists')) {
+        if (!authError && signUpData?.user) {
+          userId = signUpData.user.id;
+          activeSession = signUpData.session || null;
+        } else if (authError) {
+          const lowerMsg = (authError.message || '').toLowerCase();
+          if (lowerMsg.includes('already registered') || lowerMsg.includes('already exists')) {
             // Attempt automatic sign in if account exists
             const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
               email: trimmedEmail,
@@ -121,24 +127,50 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
               );
             }
             userId = signInData.user.id;
+            activeSession = signInData.session;
           } else {
-            throw authError;
+            // Fallback to server-side register_user_account RPC if Supabase SMTP rate limit (429) or mailer error occurs
+            const { data: rpcReg, error: rpcErr } = await supabase.rpc('register_user_account', {
+              p_email: trimmedEmail,
+              p_password: form.password,
+              p_full_name: defaultName,
+              p_role: createdRole
+            });
+            if (rpcErr || rpcReg?.error) {
+              throw authError;
+            }
+            if (rpcReg?.user_id) {
+              userId = rpcReg.user_id;
+            }
           }
-        } else {
-          userId = signUpData?.user?.id || '';
         }
 
         // Try immediate password sign in if signUp did not return an active session
-        let activeSession = signUpData?.session || null;
         if (!activeSession && trimmedEmail && form.password) {
           try {
-            const { data: directSignIn } = await supabase.auth.signInWithPassword({
+            const { data: directSignIn, error: directErr } = await supabase.auth.signInWithPassword({
               email: trimmedEmail,
               password: form.password
             });
-            if (directSignIn?.user) {
+            if (directSignIn?.user && directSignIn?.session) {
               userId = directSignIn.user.id;
               activeSession = directSignIn.session;
+            } else if (directErr) {
+              // Ensure account is confirmed via RPC and retry sign in once
+              await supabase.rpc('register_user_account', {
+                p_email: trimmedEmail,
+                p_password: form.password,
+                p_full_name: defaultName,
+                p_role: createdRole
+              });
+              const { data: retrySignIn } = await supabase.auth.signInWithPassword({
+                email: trimmedEmail,
+                password: form.password
+              });
+              if (retrySignIn?.user && retrySignIn?.session) {
+                userId = retrySignIn.user.id;
+                activeSession = retrySignIn.session;
+              }
             }
           } catch (_) {}
         }
@@ -146,8 +178,6 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         const activeId = userId || signUpData?.user?.id || '';
 
         if (!activeSession) {
-          // Email confirmation is required — the Postgres trigger on auth.users has already
-          // created the profile (and pending tutor record for teachers).
           setSuccessInfo(
             t(
               'Account created! Please check your email inbox to confirm your account, then sign in.',

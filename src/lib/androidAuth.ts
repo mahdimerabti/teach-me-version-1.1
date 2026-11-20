@@ -55,8 +55,8 @@ export const getSafeRedirectUrl = (): string => {
  */
 export async function checkGoogleProviderEnabled(): Promise<{ enabled: boolean; reason?: string }> {
   try {
-    const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || 'https://azlvrrioyvqdlacjlbhs.supabase.co').replace(/\/$/, '');
-    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+    const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || 'https://priqushrcnedrtkpmbzu.supabase.co').replace(/\/$/, '');
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_1eYu1ny3h-eTvmtT6WSwOA_hDfO_vyo';
     const res = await fetch(`${supabaseUrl}/auth/v1/settings`, {
       headers: supabaseAnonKey ? { apikey: supabaseAnonKey } : undefined
     });

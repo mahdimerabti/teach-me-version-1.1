@@ -7,8 +7,10 @@
 
 -- 1. Fix NULL GoTrue string token columns on SQL-seeded auth.users (e.g. admin@demo.com)
 --    GoTrue fails with HTTP 500 "Database error querying schema" when these are NULL.
+--    Also ensure email_confirmed_at is populated so users are never locked out by email confirmation.
 update auth.users
 set
+  email_confirmed_at         = coalesce(email_confirmed_at, now()),
   confirmation_token         = coalesce(confirmation_token, ''),
   recovery_token             = coalesce(recovery_token, ''),
   email_change_token_new     = coalesce(email_change_token_new, ''),
@@ -17,7 +19,8 @@ set
   phone_change               = coalesce(phone_change, ''),
   phone_change_token         = coalesce(phone_change_token, ''),
   reauthentication_token     = coalesce(reauthentication_token, '')
-where confirmation_token is null
+where email_confirmed_at is null
+   or confirmation_token is null
    or recovery_token is null
    or email_change_token_new is null
    or email_change is null
@@ -25,6 +28,32 @@ where confirmation_token is null
    or phone_change is null
    or phone_change_token is null
    or reauthentication_token is null;
+
+-- 1b. BEFORE INSERT trigger on auth.users to auto-confirm new accounts and normalize tokens
+create or replace function public.before_auth_user_created()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.email_confirmed_at         := coalesce(new.email_confirmed_at, now());
+  new.confirmation_token         := coalesce(new.confirmation_token, '');
+  new.recovery_token             := coalesce(new.recovery_token, '');
+  new.email_change_token_new     := coalesce(new.email_change_token_new, '');
+  new.email_change               := coalesce(new.email_change, '');
+  new.email_change_token_current := coalesce(new.email_change_token_current, '');
+  new.phone_change               := coalesce(new.phone_change, '');
+  new.phone_change_token         := coalesce(new.phone_change_token, '');
+  new.reauthentication_token     := coalesce(new.reauthentication_token, '');
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_before_insert on auth.users;
+create trigger on_auth_user_before_insert
+  before insert on auth.users
+  for each row execute function public.before_auth_user_created();
 
 -- 2. Add optional email & phone columns to public.tutors (preserves existing data)
 alter table public.tutors add column if not exists email text;
@@ -170,6 +199,105 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- 5b. Fallback direct account registration RPC (bypasses Supabase free-tier 2-emails/hour
+--     SMTP rate limit when 'Confirm email' is left enabled in the dashboard, while creating
+--     a genuine bcrypt-hashed GoTrue user + identity so signInWithPassword returns a real JWT).
+create or replace function public.register_user_account(
+  p_email text,
+  p_password text,
+  p_full_name text,
+  p_role text default 'student'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_clean_email text := lower(trim(coalesce(p_email, '')));
+  v_clean_name text := coalesce(nullif(trim(coalesce(p_full_name, '')), ''), split_part(v_clean_email, '@', 1), 'User');
+  v_clean_role text := case when lower(coalesce(p_role, '')) = 'tutor' then 'tutor' else 'student' end;
+  v_existing_id uuid;
+  v_user_id uuid;
+  v_meta jsonb;
+begin
+  if v_clean_email = '' or position('@' in v_clean_email) = 0 then
+    return jsonb_build_object('error', 'invalid_email');
+  end if;
+
+  if length(coalesce(p_password, '')) < 6 then
+    return jsonb_build_object('error', 'weak_password');
+  end if;
+
+  select id into v_existing_id
+  from auth.users
+  where lower(email) = v_clean_email
+  limit 1;
+
+  if v_existing_id is not null then
+    -- Ensure existing account is confirmed so signInWithPassword works if password matches
+    update auth.users
+    set email_confirmed_at = coalesce(email_confirmed_at, now())
+    where id = v_existing_id and email_confirmed_at is null;
+
+    return jsonb_build_object('status', 'already_exists', 'user_id', v_existing_id);
+  end if;
+
+  v_user_id := gen_random_uuid();
+  v_meta := jsonb_build_object(
+    'sub', v_user_id::text,
+    'email', v_clean_email,
+    'full_name', v_clean_name,
+    'role', v_clean_role,
+    'email_verified', true,
+    'phone_verified', false
+  );
+
+  insert into auth.users (
+    instance_id, id, aud, role, email, encrypted_password,
+    email_confirmed_at, raw_app_meta_data, raw_user_meta_data,
+    created_at, updated_at,
+    confirmation_token, email_change, email_change_token_new, recovery_token,
+    email_change_token_current, phone_change, phone_change_token, reauthentication_token,
+    is_sso_user, is_anonymous
+  ) values (
+    '00000000-0000-0000-0000-000000000000',
+    v_user_id,
+    'authenticated',
+    'authenticated',
+    v_clean_email,
+    extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
+    now(),
+    '{"provider":"email","providers":["email"]}'::jsonb,
+    v_meta,
+    now(),
+    now(),
+    '', '', '', '',
+    '', '', '', '',
+    false,
+    false
+  );
+
+  insert into auth.identities (
+    provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at, id
+  ) values (
+    v_user_id::text,
+    v_user_id,
+    v_meta,
+    'email',
+    now(),
+    now(),
+    now(),
+    gen_random_uuid()
+  )
+  on conflict (provider_id, provider) do nothing;
+
+  return jsonb_build_object('status', 'created', 'user_id', v_user_id);
+end;
+$$;
+
+grant execute on function public.register_user_account(text, text, text, text) to anon, authenticated;
 
 -- 6. Prevent non-admins from changing tutor approval status or escalating profile role to admin
 create or replace function public.enforce_tutor_status_guard()
