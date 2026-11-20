@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { ArrowLeft, Check, Crown, Gift, History, Sparkles, Wallet, CreditCard, ShieldCheck, ExternalLink, Loader2 } from 'lucide-react';
-import { CREDIT_PACKAGES, purchasePackage, useCreditBalance, type CreditPackage } from '../lib/credits';
+import { ArrowLeft, Check, Crown, Gift, History, Sparkles, Wallet, CreditCard, ShieldCheck, ExternalLink, Loader2, Lock } from 'lucide-react';
+import { CREDIT_PACKAGES, claimFreeTrialCredits, purchasePackage, useCreditBalance, type CreditPackage } from '../lib/credits';
 import { createChargilyCheckout, type ChargilyPaymentMethod } from '../lib/chargily';
-import { CURRENCY_CODE } from '../lib/config';
+import { FREE_TRIAL_INITIAL_CREDITS, PAID_PLANS_ENABLED } from '../lib/config';
 
 type Props = {
   language: 'en' | 'ar' | 'fr';
@@ -17,16 +17,51 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
   const [paymentMethod, setPaymentMethod] = useState<ChargilyPaymentMethod>('edahabia');
   const [loadingCheckout, setLoadingCheckout] = useState(false);
   const [justPurchased, setJustPurchased] = useState<CreditPackage | null>(null);
+  const [claimingTrial, setClaimingTrial] = useState(false);
+  const [trialBanner, setTrialBanner] = useState<{ type: 'success' | 'info' | 'error'; message: string } | null>(null);
+
+  const handleClaimFreeTrial = async () => {
+    setClaimingTrial(true);
+    setTrialBanner(null);
+    try {
+      const res = await claimFreeTrialCredits(FREE_TRIAL_INITIAL_CREDITS);
+      if (!res.ok) {
+        setTrialBanner({
+          type: 'error',
+          message: res.error || t('Could not claim trial credits right now.', 'تعذر استلام الأرصدة المجانية حالياً.')
+        });
+      } else if (res.alreadySufficient) {
+        setTrialBanner({
+          type: 'info',
+          message: t(
+            `You already have ${res.balance} Free Trial Credits ready to use! Come back when your balance reaches 2 or fewer.`,
+            `لديك بالفعل ${res.balance} أرصدة تجريبية مجانية جاهزة للاستخدام! يمكنك المطالبة بمزيد عندما يصل رصيدك إلى 2 أو أقل.`
+          )
+        });
+      } else {
+        setTrialBanner({
+          type: 'success',
+          message: t(
+            `+${res.granted} Free Trial Credits added! Your balance is now ${res.balance} credits.`,
+            `تمت إضافة +${res.granted} أرصدة تجريبية مجانية! رصيدك الآن ${res.balance} رصيد.`
+          )
+        });
+      }
+    } finally {
+      setClaimingTrial(false);
+    }
+  };
 
   const initiateBuy = (pkg: CreditPackage) => {
+    if (!PAID_PLANS_ENABLED) return;
     setSelectedPkg(pkg);
   };
 
   const handleConfirmChargilyPayment = async () => {
-    if (!selectedPkg) return;
+    if (!selectedPkg || !PAID_PLANS_ENABLED) return;
     setLoadingCheckout(true);
     try {
-      const priceDZD = selectedPkg.price * 200; // Exchange rate approx 200 DZD / USD
+      const priceDZD = selectedPkg.price * 200;
       const checkout = await createChargilyCheckout({
         packageId: selectedPkg.id,
         packageName: selectedPkg.name,
@@ -56,46 +91,114 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
         <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
-        <h1 className="font-bold text-gray-900 flex-1">{t('Credit Packages', 'باقات الرصيد')}</h1>
+        <h1 className="font-bold text-gray-900 flex-1">
+          {!PAID_PLANS_ENABLED
+            ? t('Free Trial Credits', 'الأرصدة التجريبية المجانية', 'Crédits d\'essai gratuits')
+            : t('Credit Packages', 'باقات الرصيد', 'Forfaits de crédits')}
+        </h1>
         <button
           onClick={onHistory}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl text-xs font-semibold transition-colors"
         >
-          <History className="w-3.5 h-3.5" /> {t('History', 'السجل')}
+          <History className="w-3.5 h-3.5" /> {t('History', 'السجل', 'Historique')}
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 animate-slide-up pb-8">
         <div className="gradient-animated rounded-3xl p-5 shadow-xl shadow-blue-200/50 flex items-center gap-4">
           <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center">
-            <Wallet className="w-6 h-6 text-white" />
+            {!PAID_PLANS_ENABLED ? (
+              <Gift className="w-6 h-6 text-white" />
+            ) : (
+              <Wallet className="w-6 h-6 text-white" />
+            )}
           </div>
           <div>
-            <p className="text-blue-100 text-xs">{t('Current Balance', 'رصيدك الحالي')}</p>
+            <p className="text-blue-100 text-xs">
+              {!PAID_PLANS_ENABLED
+                ? t('Remaining Free Trial Credits', 'رصيدك التجريبي المجاني المتبقي', 'Crédits d\'essai restants')
+                : t('Current Balance', 'رصيدك الحالي', 'Solde actuel')}
+            </p>
             <p className="text-white font-bold text-2xl leading-tight">
-              {balance} <span className="text-sm font-semibold">{t('credits', 'رصيد')}</span>
+              {balance} <span className="text-sm font-semibold">{t('credits', 'رصيد', 'crédits')}</span>
             </p>
           </div>
         </div>
 
-        <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3.5 flex items-center gap-3">
-          <div className="w-8 h-8 bg-emerald-600/10 rounded-xl flex items-center justify-center flex-shrink-0">
-            <CreditCard className="w-4 h-4 text-emerald-600" />
+        {/* Free Trial Credits Card (active while paid plans are temporarily paused) */}
+        {!PAID_PLANS_ENABLED && (
+          <div className="bg-emerald-50 border-2 border-emerald-200 rounded-3xl p-5 space-y-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-emerald-600 text-white rounded-2xl flex items-center justify-center flex-shrink-0 shadow-md shadow-emerald-200">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <span className="inline-block text-[10px] font-extrabold uppercase tracking-wider bg-emerald-600 text-white px-2 py-0.5 rounded-full mb-1">
+                  {t('FREE TRIAL ACTIVE', 'الفترة التجريبية المجانية مفعّلة', 'ESSAI GRATUIT ACTIF')}
+                </span>
+                <h2 className="font-bold text-emerald-950 text-base">
+                  {t('Join Live Teacher Sessions for Free', 'انضم لحصص الأساتذة المباشرة مجاناً', 'Rejoignez les cours en direct gratuitement')}
+                </h2>
+                <p className="text-xs text-emerald-800 mt-1 leading-relaxed">
+                  {t(
+                    'Paid subscriptions are temporarily disabled while we offer free trial access. Each live session uses 1 free trial credit — claim more anytime when you run low!',
+                    'تم إيقاف الباقات المدفوعة مؤقتاً وإتاحة التجربة المجانية بالكامل. كل حصة مباشرة تستهلك رصيداً تجريبياً واحداً، ويمكنك المطالبة برصيد مجاني إضافي عند الحاجة!',
+                    'Les paiements sont temporairement désactivés pendant la période d\'essai. Chaque session utilise 1 crédit d\'essai gratuit.'
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {trialBanner && (
+              <div className={`rounded-xl p-3 text-xs font-semibold ${
+                trialBanner.type === 'success'
+                  ? 'bg-white text-emerald-700 border border-emerald-200'
+                  : trialBanner.type === 'info'
+                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                  : 'bg-red-50 text-red-700 border border-red-200'
+              }`}>
+                {trialBanner.message}
+              </div>
+            )}
+
+            <button
+              onClick={handleClaimFreeTrial}
+              disabled={claimingTrial}
+              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white rounded-xl font-bold text-sm shadow-lg shadow-emerald-200 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+            >
+              {claimingTrial ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> {t('Adding Free Credits...', 'جاري إضافة الأرصدة...')}</>
+              ) : (
+                <><Gift className="w-4 h-4" /> {t(`Claim +${FREE_TRIAL_INITIAL_CREDITS} Free Trial Credits`, `استلام +${FREE_TRIAL_INITIAL_CREDITS} أرصدة تجريبية مجانية`, `Réclamer +${FREE_TRIAL_INITIAL_CREDITS} crédits gratuits`)}</>
+              )}
+            </button>
           </div>
-          <p className="text-xs text-emerald-800 leading-snug">
-            <strong className="font-bold">{t('Secure Online Payment:', 'الدفع الإلكتروني الآمن:')}</strong>{' '}
-            {t('Pay securely with EDAHABIA or CIB cards.', 'ادفع بأمان عبر بطاقة الذهبية أو الكارت البنكي CIB.')}
-          </p>
-        </div>
+        )}
+
+        {PAID_PLANS_ENABLED && (
+          <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3.5 flex items-center gap-3">
+            <div className="w-8 h-8 bg-emerald-600/10 rounded-xl flex items-center justify-center flex-shrink-0">
+              <CreditCard className="w-4 h-4 text-emerald-600" />
+            </div>
+            <p className="text-xs text-emerald-800 leading-snug">
+              <strong className="font-bold">{t('Secure Online Payment:', 'الدفع الإلكتروني الآمن:')}</strong>{' '}
+              {t('Pay securely with EDAHABIA or CIB cards.', 'ادفع بأمان عبر بطاقة الذهبية أو الكارت البنكي CIB.')}
+            </p>
+          </div>
+        )}
 
         {CREDIT_PACKAGES.map(pkg => (
           <div
             key={pkg.id}
             className={`bg-white rounded-2xl p-5 shadow-sm border-2 transition-all relative ${
-              pkg.highlight ? 'border-blue-500 shadow-lg shadow-blue-100' : 'border-gray-100'
+              !PAID_PLANS_ENABLED
+                ? 'border-gray-100 opacity-75'
+                : pkg.highlight
+                ? 'border-blue-500 shadow-lg shadow-blue-100'
+                : 'border-gray-100'
             }`}
           >
-            {pkg.highlight && (
+            {pkg.highlight && PAID_PLANS_ENABLED && (
               <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[10px] font-bold px-3 py-1 rounded-full flex items-center gap-1 shadow-lg shadow-blue-200">
                 <Crown className="w-3 h-3" /> {t('Best Value', 'الأفضل قيمة')}
               </span>
@@ -108,9 +211,14 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
                 </p>
               </div>
               <div className="text-right">
-                <p className="font-bold text-gray-900 text-xl">{(pkg.price * 200).toLocaleString()} {t('DZD', 'د.ج')}</p>
+                {!PAID_PLANS_ENABLED ? (
+                  <span className="inline-block text-[10px] font-bold uppercase bg-slate-100 text-slate-500 px-2.5 py-1 rounded-full">
+                    {t('Paused (Free Trial)', 'متوقف مؤقتاً (تجربة مجانية)')}
+                  </span>
+                ) : (
+                  <p className="font-bold text-gray-900 text-xl">{(pkg.price * 200).toLocaleString()} {t('DZD', 'د.ج')}</p>
+                )}
               </div>
-
             </div>
             <div className="mt-3 space-y-1.5">
               <p className="flex items-center gap-2 text-xs text-gray-600">
@@ -123,21 +231,33 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
             </div>
             <button
               onClick={() => initiateBuy(pkg)}
-              className={`mt-4 w-full py-3 rounded-xl font-bold text-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2 ${
-                pkg.highlight
-                  ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-200'
-                  : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+              disabled={!PAID_PLANS_ENABLED}
+              className={`mt-4 w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
+                !PAID_PLANS_ENABLED
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : pkg.highlight
+                  ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-200 active:scale-[0.98]'
+                  : 'bg-blue-50 text-blue-600 hover:bg-blue-100 active:scale-[0.98]'
               }`}
             >
-              <CreditCard className="w-4 h-4" />
-              {t('Pay Securely (EDAHABIA / CIB)', 'ادفع بأمان (الذهبية / CIB)')}
+              {!PAID_PLANS_ENABLED ? (
+                <>
+                  <Lock className="w-4 h-4" />
+                  {t('Paid Plans Temporarily Disabled — Use Free Trial', 'الباقات المدفوعة متوقفة مؤقتاً — استخدم التجربة المجانية')}
+                </>
+              ) : (
+                <>
+                  <CreditCard className="w-4 h-4" />
+                  {t('Pay Securely (EDAHABIA / CIB)', 'ادفع بأمان (الذهبية / CIB)')}
+                </>
+              )}
             </button>
           </div>
         ))}
       </div>
 
-      {/* Payment Modal */}
-      {selectedPkg && (
+      {/* Payment Modal (preserved cleanly for re-enabling paid plans later) */}
+      {PAID_PLANS_ENABLED && selectedPkg && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setSelectedPkg(null)} />
           <div className="relative bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl animate-bounce-in">
@@ -255,4 +375,3 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
     </div>
   );
 }
-

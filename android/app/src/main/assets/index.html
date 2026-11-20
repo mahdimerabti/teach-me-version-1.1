@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#2563eb" />
+    <meta name="theme-color" content="#0b1120" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -20,16 +20,71 @@
     <meta property="og:description" content="احجز دروسك الخصوصية المباشرة عبر الإنترنت مع أفضل الأساتذة المعتمدين في الجزائر." />
     <meta property="og:image" content="https://teachmelearn.netlify.app/assets/og-image.png" />
 
+    <!-- Immediate zero-FOUC dark splash styles (rendered before JS/CSS bundles execute) -->
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background-color: #0b1120;
+      }
+      #tm-initial-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at 50% 35%, #172554 0%, #0b1120 72%);
+        color: #f8fafc;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Cairo, sans-serif;
+        transition: opacity 240ms ease-out, visibility 240ms ease-out;
+        opacity: 1;
+        visibility: visible;
+      }
+      #tm-initial-splash.tm-splash-hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .tm-splash-brand {
+        font-size: 2.25rem;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        background: linear-gradient(90deg, #a78bfa 0%, #818cf8 45%, #38bdf8 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        margin-bottom: 14px;
+      }
+      .tm-splash-spinner {
+        width: 30px;
+        height: 30px;
+        border-radius: 9999px;
+        border: 3px solid rgba(148, 163, 184, 0.22);
+        border-top-color: #60a5fa;
+        animation: tmSpin 0.75s linear infinite;
+      }
+      @keyframes tmSpin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <!-- Preload Jitsi External API for Instant Live Video Rooms -->
     <script src="https://meet.jit.si/external_api.js" async></script>
-    <script type="module" crossorigin src="/assets/index-BacYxPg1.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-4l3jE9Fi.css">
+    <script type="module" crossorigin src="/assets/index-Cu42ZWoL.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-wkKFRLBg.css">
   </head>
   <body class="h-full bg-slate-50 text-slate-900 antialiased selection:bg-blue-500 selection:text-white">
+    <div id="tm-initial-splash" role="status" aria-label="Loading Teach Me">
+      <div class="tm-splash-brand">Teach Me</div>
+      <div class="tm-splash-spinner"></div>
+    </div>
     <div id="root" class="h-full flex flex-col"></div>
   </body>
 </html>

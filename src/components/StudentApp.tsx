@@ -17,6 +17,8 @@ import CreditHistoryScreen from './CreditHistoryScreen';
 import JoinSessionButton from './JoinSessionButton';
 import LiveMeetingRoom from './LiveMeetingRoom';
 import { addSessionsRemote, useBookedSessions, convertDbTimeToFrontend, type BookedSession, type SelectedSlot } from '../lib/bookingsStore';
+import { claimFreeTrialCredits, spendTrialCreditForLiveJoin, useCreditBalance } from '../lib/credits';
+import { FREE_TRIAL_INITIAL_CREDITS, PAID_PLANS_ENABLED } from '../lib/config';
 import { supabase } from '../lib/supabase';
 import {
   getOrCreateConversation,
@@ -84,6 +86,9 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   const [selectedLevel, setSelectedLevel] = useState<Level | null>(null);
   const [selectedTutor, setSelectedTutor] = useState<Tutor | null>(null);
   const [filterType, setFilterType] = useState<FilterType>('Top Rated');
+  const [specialtyFilter, setSpecialtyFilter] = useState<string>('all');
+  const [joiningLiveTutorId, setJoiningLiveTutorId] = useState<string | null>(null);
+  const creditBalance = useCreditBalance();
   const [searchQuery, setSearchQuery] = useState('');
   const [tutorsList, setTutorsList] = useState<Tutor[]>([]);
   const [tutorSchedule, setTutorSchedule] = useState<any[]>([]);
@@ -152,6 +157,9 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             avatarUrl: t.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
             videoUrl: t.video_url || undefined,
             isOnline: t.is_online ?? true,
+            isLive: Boolean(t.is_live && t.active_session_url),
+            activeSessionUrl: t.active_session_url || null,
+            activeSessionSubject: t.active_session_subject || null,
             responseTime: t.response_time || '< 15 mins',
             isVerified: t.is_verified ?? true,
             category: t.category || '',
@@ -162,8 +170,40 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           const dbIds = new Set(mapped.map(m => m.id));
           const combined = [...mapped, ...tutors.filter(st => !dbIds.has(st.id))];
           setTutorsList(combined);
+          setSelectedTutor(prev => (prev ? combined.find(item => item.id === prev.id) || prev : null));
         }
       });
+  };
+
+  const handleJoinLiveTutorSession = async (tutor: Tutor) => {
+    if (!tutor.activeSessionUrl) return;
+    setJoiningLiveTutorId(tutor.id);
+    try {
+      let spendRes = await spendTrialCreditForLiveJoin(tutor.id, 1);
+
+      // In Free Trial mode, auto-top-up starter/refill credits if student has 0 credits
+      if (!spendRes.ok && spendRes.error === 'insufficient_credits' && !PAID_PLANS_ENABLED) {
+        const claim = await claimFreeTrialCredits(FREE_TRIAL_INITIAL_CREDITS);
+        if (claim.ok && claim.balance > 0) {
+          spendRes = await spendTrialCreditForLiveJoin(tutor.id, 1);
+        }
+      }
+
+      if (!spendRes.ok && spendRes.error === 'insufficient_credits') {
+        nav('packages');
+        return;
+      }
+
+      const target = tutor.activeSessionUrl.trim();
+      if (/^https?:\/\//i.test(target)) {
+        window.open(target, '_blank', 'noopener,noreferrer');
+      } else {
+        setLiveRoomId(target);
+        nav('meeting');
+      }
+    } finally {
+      setJoiningLiveTutorId(null);
+    }
   };
 
   useEffect(() => {
@@ -557,20 +597,41 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
 
   const q = searchQuery.trim().toLowerCase();
 
+  // Dynamic list of specialties/subjects available across approved tutors
+  const availableSpecialties = Array.from(
+    new Set(
+      tutorsList
+        .flatMap(tut => [
+          ...(tut.category ? [tut.category.trim()] : []),
+          ...parseSubjects(tut.subjects).map(s => s.trim())
+        ])
+        .filter(Boolean)
+    )
+  );
+
+  const liveApprovedTutors = tutorsList.filter(tut => tut.isLive && tut.activeSessionUrl);
+
   const filteredTutors = (() => {
     const activeList = tutorsList.length > 0 ? tutorsList : tutors;
     let list = activeList.filter(t => {
       const tutorSubjects = parseSubjects(t.subjects);
+      const tutorCategory = (t.category || '').trim().toLowerCase();
       const matchesSubject = !selectedSubject || tutorSubjects.some(s => isSubjectMatch(s, selectedSubject));
+      const matchesSpecialty =
+        specialtyFilter === 'all' ||
+        (specialtyFilter === 'live' && Boolean(t.isLive && t.activeSessionUrl)) ||
+        tutorCategory === specialtyFilter.toLowerCase() ||
+        tutorSubjects.some(s => s.trim().toLowerCase() === specialtyFilter.toLowerCase());
       const matchesQuery = !q ||
         t.name.toLowerCase().includes(q) ||
         (t.nameAr && t.nameAr.toLowerCase().includes(q)) ||
+        tutorCategory.includes(q) ||
         tutorSubjects.some(s => s.toLowerCase().includes(q));
-      return matchesSubject && matchesQuery;
+      return matchesSubject && matchesSpecialty && matchesQuery;
     });
     if (filterType === 'Price') list = [...list].sort((a, b) => a.hourlyRate - b.hourlyRate);
     if (filterType === 'Experience') list = [...list].sort((a, b) => b.experienceYears - a.experienceYears);
-    if (filterType === 'Top Rated') list = [...list].sort((a, b) => b.rating - a.rating);
+    if (filterType === 'Top Rated') list = [...list].sort((a, b) => Number(Boolean(b.isLive)) - Number(Boolean(a.isLive)) || b.rating - a.rating);
     return list;
   })();
 
@@ -1193,7 +1254,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             >
               {themeMode === 'light' ? <Moon className="w-4 h-4 text-gray-600" /> : <Sun className="w-4 h-4 text-amber-500" />}
             </button>
-            <CreditBadge onClick={() => nav('packages')} />
+            <CreditBadge onClick={() => nav('packages')} language={language} />
             <button
               onClick={() => setShowNotifications(true)}
               className="relative p-2 hover:bg-gray-100 rounded-xl transition-colors"
@@ -1341,6 +1402,66 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             </button>
           ))}
         </div>
+        {/* Free Trial Credits quick status strip */}
+        {!PAID_PLANS_ENABLED && (
+          <div className="mx-4 mt-3 bg-emerald-50 border border-emerald-200 rounded-2xl px-3.5 py-2.5 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-emerald-900 truncate">
+                {t(`🎁 Free Trial: ${creditBalance} Credits Left`, `🎁 تجربة مجانية: لديك ${creditBalance} رصيد متبقي`, `🎁 Essai gratuit : ${creditBalance} crédits restants`)}
+              </p>
+              <p className="text-[10px] text-emerald-700 truncate">
+                {t('Join any live Zoom session free (1 trial credit)', 'انضم لأي حصة زوم مباشرة مجاناً (1 رصيد تجريبي)', 'Rejoignez n\'importe quel cours en direct (1 crédit)')}
+              </p>
+            </div>
+            <button
+              onClick={() => nav('packages')}
+              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-bold flex-shrink-0 transition-colors"
+            >
+              {creditBalance <= 2 ? t('Claim Free', 'استلام مجاني') : t('Details', 'التفاصيل')}
+            </button>
+          </div>
+        )}
+
+        {/* Active Live Zoom Sessions banner for approved teachers currently live */}
+        {liveApprovedTutors.length > 0 && (
+          <div className="mx-4 mt-3 space-y-2">
+            {liveApprovedTutors.map(liveTutor => (
+              <div
+                key={`live-banner-${liveTutor.id}`}
+                className="bg-gradient-to-r from-red-600 to-rose-600 text-white rounded-2xl p-3.5 shadow-lg shadow-red-200/60 flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="relative flex-shrink-0">
+                    <img
+                      src={liveTutor.avatarUrl}
+                      alt={liveTutor.name}
+                      className="w-10 h-10 rounded-xl object-cover border-2 border-white/60"
+                    />
+                    <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-400 border-2 border-red-600 rounded-full animate-ping" />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider bg-white/20 px-2 py-0.5 rounded-full">
+                      ● {t('LIVE ZOOM NOW', 'بث زوم مباشر الآن')}
+                    </span>
+                    <p className="font-bold text-sm truncate mt-0.5">{liveTutor.name}</p>
+                    <p className="text-[11px] text-red-100 truncate">
+                      {liveTutor.activeSessionSubject || liveTutor.subjects[0] || liveTutor.category}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleJoinLiveTutorSession(liveTutor)}
+                  disabled={joiningLiveTutorId === liveTutor.id}
+                  className="px-3.5 py-2 bg-white text-red-600 hover:bg-red-50 rounded-xl text-xs font-extrabold shadow flex items-center gap-1.5 flex-shrink-0 transition-all active:scale-95 disabled:opacity-60"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  {t('Join Live', 'انضمام الآن')}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="mt-5 px-4 animate-slide-up delay-200">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-bold text-gray-900 text-lg">{t('Choose Your Subject', 'اختر تخصصك', 'Choisissez votre matière')}</h3>
@@ -1436,6 +1557,14 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                       <span className="text-xs text-gray-400">({tutor.reviewCount})</span>
                     </div>
                     <div className="flex items-center gap-2 mt-2 flex-wrap">
+                      {tutor.isLive && tutor.activeSessionUrl && (
+                        <span
+                          onClick={e => { e.stopPropagation(); handleJoinLiveTutorSession(tutor); }}
+                          className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-red-600 text-white px-2.5 py-1 rounded-lg shadow-sm animate-pulse cursor-pointer"
+                        >
+                          <Video className="w-3 h-3" /> {t('LIVE · Join Now', 'مباشر · انضم الآن')}
+                        </span>
+                      )}
                       {tutor.languages.map(l => (
                         <span key={l} className="text-[10px] bg-blue-50 text-blue-600 border border-blue-100 px-2 py-0.5 rounded-lg font-semibold">{l}</span>
                       ))}
@@ -1765,6 +1894,39 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             </button>
           ))}
         </div>
+
+        {/* Specialty & Live Filter Chips */}
+        <div className="flex gap-1.5 mt-2.5 overflow-x-auto pb-1">
+          <button
+            onClick={() => setSpecialtyFilter('all')}
+            className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-all ${
+              specialtyFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {t('All Specialties', 'كل التخصصات')}
+          </button>
+          {liveApprovedTutors.length > 0 && (
+            <button
+              onClick={() => setSpecialtyFilter('live')}
+              className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-all flex items-center gap-1 ${
+                specialtyFilter === 'live' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-600 hover:bg-red-100'
+              }`}
+            >
+              ● {t('Live Now', 'مباشر الآن')} ({liveApprovedTutors.length})
+            </button>
+          )}
+          {availableSpecialties.map(spec => (
+            <button
+              key={spec}
+              onClick={() => setSpecialtyFilter(spec)}
+              className={`px-3 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap transition-all ${
+                specialtyFilter === spec ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+              }`}
+            >
+              {spec}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto pb-4 p-3 space-y-3">
@@ -1863,10 +2025,37 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               {tutor.subjects.length > 3 && (
                 <span className="text-[10px] text-gray-400 font-medium">+{tutor.subjects.length - 3} more</span>
               )}
-              <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${tutor.isOnline ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
-                {tutor.isOnline ? '● Online' : '○ Offline'}
+              <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                tutor.isLive ? 'bg-red-100 text-red-600 animate-pulse font-extrabold' :
+                tutor.isOnline ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'
+              }`}>
+                {tutor.isLive ? t('● LIVE NOW', '● مباشر الآن') : tutor.isOnline ? '● Online' : '○ Offline'}
               </span>
             </div>
+            {tutor.isLive && tutor.activeSessionUrl && (
+              <div className="mt-3 pt-2.5 border-t border-red-100">
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={e => {
+                    e.stopPropagation();
+                    handleJoinLiveTutorSession(tutor);
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.stopPropagation();
+                      handleJoinLiveTutorSession(tutor);
+                    }
+                  }}
+                  className="w-full py-2.5 px-3 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 shadow-md shadow-red-200 transition-all"
+                >
+                  <Video className="w-4 h-4" />
+                  {joiningLiveTutorId === tutor.id
+                    ? t('Joining Live Session...', 'جاري الانضمام للحصة...')
+                    : t('🔴 Join Live Zoom Session (1 Free Trial Credit)', '🔴 انضم لحصة زوم المباشرة الآن (1 رصيد تجريبي)')}
+                </div>
+              </div>
+            )}
           </button>
         ))
         )}
@@ -1919,6 +2108,29 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
 
       <div className="flex-1 overflow-y-auto pb-28 -mt-3">
         <div className="bg-white rounded-t-3xl p-4 space-y-4">
+          {selectedTutor.isLive && selectedTutor.activeSessionUrl && (
+            <div className="bg-gradient-to-r from-red-600 to-rose-600 rounded-2xl p-4 text-white shadow-lg shadow-red-200/70 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider bg-white/20 px-2.5 py-1 rounded-full">
+                  <span className="w-2 h-2 bg-green-300 rounded-full animate-ping" />
+                  {t('LIVE ZOOM SESSION OPEN', 'حصة زوم مباشرة مفتوحة الآن')}
+                </span>
+                <span className="text-xs font-semibold text-red-100">
+                  {selectedTutor.activeSessionSubject || selectedTutor.subjects[0] || selectedTutor.category}
+                </span>
+              </div>
+              <button
+                onClick={() => handleJoinLiveTutorSession(selectedTutor)}
+                disabled={joiningLiveTutorId === selectedTutor.id}
+                className="w-full py-3 bg-white text-red-600 hover:bg-red-50 rounded-xl font-extrabold text-sm shadow flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-60"
+              >
+                <Video className="w-4 h-4" />
+                {joiningLiveTutorId === selectedTutor.id
+                  ? t('Joining...', 'جاري الانضمام...')
+                  : t('Join Live Zoom Session Now (1 Free Trial Credit)', 'انضم لحصة زوم المباشرة الآن (1 رصيد تجريبي)')}
+              </button>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             {[
               { label: 'Students', value: `${selectedTutor.reviewCount}+`, icon: Users },
@@ -2078,11 +2290,17 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
       </div>
       <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-white border-t border-gray-100 p-4">
         <button
-          onClick={() => nav('payment')}
+          onClick={() => (!PAID_PLANS_ENABLED ? confirmBooking() : nav('payment'))}
           disabled={selectedSlots.length === 0}
-          className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+          className={`w-full py-3.5 text-white rounded-xl font-bold text-sm shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+            !PAID_PLANS_ENABLED
+              ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
+              : 'bg-blue-600 hover:bg-blue-700 shadow-blue-200'
+          }`}
         >
-          {t(`Continue to Payment (${selectedSlots.length} sessions) →`, `متابعة للدفع (${selectedSlots.length} حصص) ←`)}
+          {!PAID_PLANS_ENABLED
+            ? t(`Confirm Free Trial Booking (${selectedSlots.length} sessions) →`, `تأكيد الحجز التجريبي المجاني (${selectedSlots.length} حصص) ←`)
+            : t(`Continue to Payment (${selectedSlots.length} sessions) →`, `متابعة للدفع (${selectedSlots.length} حصص) ←`)}
         </button>
       </div>
     </div>

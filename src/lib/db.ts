@@ -46,6 +46,9 @@ export type Tutor = {
   idDocumentUrl?: string;
   id_document_url?: string;
   isOnline: boolean;
+  isLive?: boolean;
+  activeSessionUrl?: string | null;
+  activeSessionSubject?: string | null;
   responseTime: string;
   isVerified: boolean;
   category: string;

@@ -1,6 +1,13 @@
 export const CURRENCY_CODE = 'د.ج';
 export const CURRENCY_FULL = 'DZD';
 
+/**
+ * Feature flag: Paid credit top-ups and payment gateways are temporarily paused
+ * while the Free Trial Credits program is active. Flip to `true` to re-enable paid plans.
+ */
+export const PAID_PLANS_ENABLED = false;
+export const FREE_TRIAL_INITIAL_CREDITS = 5;
+
 export const formatPrice = (priceInDzd: number, lang: 'en' | 'ar' | 'fr' = 'ar'): string => {
   if (lang === 'ar') return `${priceInDzd} د.ج`;
   if (lang === 'fr') return `${priceInDzd} DA`;

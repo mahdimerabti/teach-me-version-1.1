@@ -552,23 +552,36 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
 
     // Preserve the session's UUID live_room_id so student & tutor join the exact same room
     let roomId = liveRoomId || sessionId;
+    let sessionSubject = profile?.subjects?.[0] || profile?.category || 'Live Lesson';
     try {
       const { data: updatedSess, error: updateErr } = await supabase
         .from('sessions')
         .update({ status: 'live' })
         .eq('id', sessionId)
-        .select('live_room_id')
+        .select('live_room_id, subject')
         .maybeSingle();
 
       if (updateErr) {
         console.warn('Notice updating session status to live:', updateErr.message);
       } else if (updatedSess?.live_room_id) {
         roomId = updatedSess.live_room_id;
+        if (updatedSess.subject) sessionSubject = updatedSess.subject;
         setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, status: 'live' } : s)));
       }
     } catch (e) {
       console.warn('Notice updating session status:', e);
     }
+
+    // Broadcast teacher's active live Zoom room on public.tutors so students see LIVE NOW immediately
+    try {
+      await supabase.rpc('start_tutor_live_session', {
+        p_room_id: roomId,
+        p_subject: sessionSubject
+      });
+    } catch (e) {
+      console.warn('Notice broadcasting tutor live session:', e);
+    }
+
     setActiveMeetingRoomId(roomId);
   };
 
@@ -590,12 +603,13 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     }
 
     let roomId = `teachme-zoom-${realId ? realId.slice(0, 8) : user.id.slice(0, 8)}`;
+    let liveSubject = profile?.subjects?.[0] || profile?.category || 'Live Zoom Class';
 
     if (realId) {
       try {
         const { data: activeSess } = await supabase
           .from('sessions')
-          .select('id, live_room_id')
+          .select('id, live_room_id, subject')
           .eq('tutor_id', realId)
           .in('status', ['confirmed', 'live'])
           .order('date', { ascending: true })
@@ -615,9 +629,23 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
           if (activeSess.live_room_id) {
             roomId = activeSess.live_room_id;
           }
+          if (activeSess.subject) {
+            liveSubject = activeSess.subject;
+          }
         }
       } catch (_) {}
     }
+
+    // Mark tutor as LIVE in public.tutors so matching students can join directly
+    try {
+      await supabase.rpc('start_tutor_live_session', {
+        p_room_id: roomId,
+        p_subject: liveSubject
+      });
+    } catch (e) {
+      console.warn('Notice broadcasting tutor live session:', e);
+    }
+
     setActiveMeetingRoomId(roomId);
   };
 
@@ -643,7 +671,10 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
         userId={user.id}
         isTutor={true}
         language={language}
-        onClose={() => setActiveMeetingRoomId(null)}
+        onClose={() => {
+          setActiveMeetingRoomId(null);
+          supabase.rpc('end_tutor_live_session').then(() => {}, () => {});
+        }}
       />
     );
   }

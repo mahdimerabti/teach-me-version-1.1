@@ -25,7 +25,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Custom Scheme Deep Link Filter for Google OAuth -->
+            <!-- Primary Custom Scheme Deep Link Filter for Google OAuth (com.teachme.app://login-callback) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.teachme.app" android:host="login-callback" />
+            </intent-filter>
+
+            <!-- Legacy Custom Scheme Deep Link Filter for Google OAuth -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

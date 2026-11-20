@@ -123,8 +123,23 @@ export default function App() {
     }
   }, [language]);
 
+  // Hide the inline dark splash overlay smoothly only AFTER React mounts and auth state resolves
+  useEffect(() => {
+    if (isAuthLoading || typeof document === 'undefined') return;
+    const splash = document.getElementById('tm-initial-splash');
+    if (!splash) return;
+    const raf = requestAnimationFrame(() => {
+      splash.classList.add('tm-splash-hidden');
+      window.setTimeout(() => {
+        splash.remove();
+      }, 260);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isAuthLoading]);
+
   useEffect(() => {
     let appUrlListener: any = null;
+    let isMounted = true;
 
     // 1. Global Capacitor Deep-Link listener for Mobile App
     const CapacitorApp = (window as any).Capacitor?.Plugins?.App;
@@ -144,56 +159,33 @@ export default function App() {
       }).then((l: any) => { appUrlListener = l; });
     }
 
-    // 2. Local storage session recovery (instant UI launch)
-    const savedUserStr = localStorage.getItem('tm_user_session');
-    let hasLocalSession = false;
-    if (savedUserStr) {
-      try {
-        const savedUser: User = JSON.parse(savedUserStr);
-        setUser(savedUser);
-        hasLocalSession = true;
-        authLog('Restored local user session from localStorage:', savedUser.email);
-        if (savedUser.role === 'admin') setAppState('admin-dashboard');
-        else if (savedUser.role === 'student') setAppState('student-app');
-        else setAppState(tutorRegistered ? 'tutor-dashboard' : 'tutor-register');
-        setIsAuthLoading(false); // Instant unlock! Zero wait time
-      } catch (e) {
-        authLog('Error parsing saved local session:', e);
-      }
-    }
-
-    // Fast 1.5s fallback safety timer to guarantee loading screen never freezes
+    // Safety ceiling timer so splash can never hang indefinitely on offline networks
     const loadingTimeout = setTimeout(() => {
-      setIsAuthLoading(false);
-    }, 1500);
+      if (isMounted) setIsAuthLoading(false);
+    }, 4000);
 
-    // 3. Complete & robust auth initialization flow
+    // 2. Complete & deterministic auth initialization flow (prevents any dashboard flash or FOUC)
     const initAuth = async () => {
       authLog('Starting initAuth execution...');
       try {
-        // First let Supabase detectSessionInUrl / persisted session resolve without racing
-        authLog('Querying supabase.auth.getSession()...');
-        let { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          authLog(`getSession error notice: ${sessionError.message}`);
-        }
-
-        if (!session && typeof window !== 'undefined') {
-          const urlParams = new URLSearchParams(window.location.search);
-          const code = urlParams.get('code');
-          if (code) {
-            authLog('OAuth authorization code found without active session. Exchanging code for session...');
-            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-            if (error) {
-              authLog(`exchangeCodeForSession notice: ${error.message}`);
-            } else if (data?.session) {
-              session = data.session;
+        // Handle Android WebView / OAuth hash (#access_token=...) or PKCE query (?code=...) callbacks first
+        if (typeof window !== 'undefined') {
+          const fullUrl = window.location.href;
+          if (fullUrl.includes('access_token=') || fullUrl.includes('code=')) {
+            authLog('OAuth callback parameters detected on initial load; processing tokens...');
+            await handleOAuthDeepLink(fullUrl);
+            if (window.location.protocol !== 'file:') {
+              window.history.replaceState(null, '', window.location.pathname);
+            } else {
+              window.location.hash = '';
             }
           }
         }
 
-        if (typeof window !== 'undefined' && (window.location.hash.includes('access_token=') || window.location.search.includes('code='))) {
-          window.history.replaceState(null, '', window.location.pathname);
+        authLog('Querying supabase.auth.getSession()...');
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          authLog(`getSession error notice: ${sessionError.message}`);
         }
 
         if (session?.user) {
@@ -201,18 +193,25 @@ export default function App() {
           await handleSessionUser(session.user);
         } else {
           // Clear any stale localStorage session that has no valid Supabase JWT
-          if (hasLocalSession) {
+          if (localStorage.getItem('tm_user_session')) {
             authLog('No active Supabase JWT session found; clearing stale local session.');
             localStorage.removeItem('tm_user_session');
+          }
+          if (isMounted) {
             setUser(null);
+            setAppState('auth');
           }
           authLog('No session found. Directing to Sign In page');
-          setAppState('auth');
         }
       } catch (err: any) {
         authLog(`initAuth exception caught: ${err?.message || err}`);
+        if (isMounted) {
+          setAppState('auth');
+        }
       } finally {
-        setIsAuthLoading(false);
+        if (isMounted) {
+          setIsAuthLoading(false);
+        }
         clearTimeout(loadingTimeout);
         authLog('initAuth finished. isAuthLoading set to false');
       }
@@ -220,25 +219,32 @@ export default function App() {
 
     initAuth();
 
-    // 4. Listen to Supabase auth state changes
+    // 3. Listen to Supabase auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       authLog(`onAuthStateChange event fired: "${event}", userId: "${session?.user?.id || 'none'}"`);
+      if (event === 'INITIAL_SESSION') {
+        return; // Handled deterministically by initAuth() above to prevent double-render flashes
+      }
       if (session?.user) {
         await handleSessionUser(session.user);
-        setIsAuthLoading(false);
+        if (isMounted) setIsAuthLoading(false);
       } else if (event === 'SIGNED_OUT') {
         authLog('User signed out event received. Clearing state & directing to login.');
         localStorage.removeItem('tm_user_session');
         localStorage.removeItem('tm_pending_oauth_role');
-        setUser(null);
-        setTutorProfile(null);
-        setTutorRegistered(false);
-        setAppState('auth');
-        setIsAuthLoading(false);
+        if (isMounted) {
+          setUser(null);
+          setTutorProfile(null);
+          setTutorRegistered(false);
+          setAppState('auth');
+          setIsAuthLoading(false);
+        }
       }
     });
 
     return () => {
+      isMounted = false;
+      clearTimeout(loadingTimeout);
       subscription.unsubscribe();
       if (appUrlListener?.remove) appUrlListener.remove();
     };
@@ -538,13 +544,13 @@ export default function App() {
 
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+      <div className="min-h-screen bg-[#0b1120] flex flex-col items-center justify-center p-6 w-full">
         <div className="flex flex-col items-center animate-pulse">
-          <span className="text-4xl font-black bg-gradient-to-r from-violet-600 via-indigo-600 to-blue-500 bg-clip-text text-transparent mb-4">
+          <span className="text-4xl font-black bg-gradient-to-r from-violet-400 via-indigo-400 to-sky-400 bg-clip-text text-transparent mb-4">
             {language === 'ar' ? 'علمني' : 'Teach Me'}
           </span>
-          <div className="flex items-center gap-2.5 text-slate-500 text-sm font-medium bg-white px-4 py-2.5 rounded-2xl shadow-sm border border-slate-100">
-            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+          <div className="flex items-center gap-2.5 text-slate-300 text-sm font-medium bg-slate-900/80 px-4 py-2.5 rounded-2xl border border-slate-800">
+            <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
             <span>{language === 'ar' ? 'جاري التحقق من الجلسة...' : 'Verifying session...'}</span>
           </div>
         </div>
