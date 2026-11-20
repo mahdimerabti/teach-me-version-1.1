@@ -544,15 +544,12 @@ export default function App() {
 
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-[#0b1120] flex flex-col items-center justify-center p-6 w-full">
-        <div className="flex flex-col items-center animate-pulse">
-          <span className="text-4xl font-black bg-gradient-to-r from-violet-400 via-indigo-400 to-sky-400 bg-clip-text text-transparent mb-4">
+      <div className="min-h-[100dvh] w-full bg-white flex flex-col items-center justify-center p-6">
+        <div className="flex flex-col items-center">
+          <span className={`text-4xl font-black tracking-tight bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent mb-4 ${language === 'ar' ? 'font-cairo py-1' : ''}`}>
             {language === 'ar' ? 'علمني' : 'Teach Me'}
           </span>
-          <div className="flex items-center gap-2.5 text-slate-300 text-sm font-medium bg-slate-900/80 px-4 py-2.5 rounded-2xl border border-slate-800">
-            <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
-            <span>{language === 'ar' ? 'جاري التحقق من الجلسة...' : 'Verifying session...'}</span>
-          </div>
+          <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
         </div>
       </div>
     );

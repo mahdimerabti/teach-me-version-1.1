@@ -88,18 +88,24 @@ export default function JoinSessionButton({ session, language, onNeedCredits, on
         disabled={joining}
         className={`w-full py-2.5 rounded-xl text-white text-sm font-bold shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-60 ${
           isLive
-            ? 'bg-red-600 hover:bg-red-700 shadow-red-200 animate-pulse'
+            ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
             : isFuture
             ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
-            : 'bg-green-500 hover:bg-green-600 shadow-green-200'
+            : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-200'
         }`}
       >
+        {isLive && (
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-200 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-white" />
+          </span>
+        )}
         <Video className="w-4 h-4" />
         {isLive
-          ? t('🔴 Join Live Lesson NOW (1 Free Trial Credit)', '🔴 انضم للحصة المباشرة الآن (رصيد تجريبي)')
+          ? t('Join Live Lesson NOW (1 Free Trial Credit)', 'انضم للحصة المباشرة الآن (رصيد تجريبي)', 'Rejoindre le cours en direct')
           : isFuture
-          ? t('🧪 Test Live Session & Zoom Room Now', '🧪 تجربة البث المباشر وغرفة زوم الآن')
-          : t('Join Live Session', 'انضم للحصة المباشرة')}
+          ? t('Test Live Session & Zoom Room Now', 'تجربة البث المباشر وغرفة زوم الآن', 'Tester la session en direct')
+          : t('Join Live Session', 'انضم للحصة المباشرة', 'Rejoindre la session en direct')}
       </button>
     </div>
   );

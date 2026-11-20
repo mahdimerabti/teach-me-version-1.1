@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   BookOpen, Search, Bell, User, ChevronRight, Star, Clock,
   MessageSquare, Calendar, TrendingUp, LogOut, Video,
-  ArrowLeft, Globe, CheckCircle, Send, KeyRound,
+  ArrowLeft, Globe, Check, CheckCheck, CheckCircle, Send, KeyRound,
   Award, Zap, X, Heart, Users, Shield, BookMarked, Mail,
   GraduationCap, Palette, FlaskConical, Music, Briefcase, HeartPulse, Target,
   Flame, Trophy, Lightbulb, Languages, Moon, Sun, CalendarClock, MessageCircle,
@@ -17,7 +17,7 @@ import CreditHistoryScreen from './CreditHistoryScreen';
 import JoinSessionButton from './JoinSessionButton';
 import LiveMeetingRoom from './LiveMeetingRoom';
 import { addSessionsRemote, useBookedSessions, convertDbTimeToFrontend, type BookedSession, type SelectedSlot } from '../lib/bookingsStore';
-import { claimFreeTrialCredits, spendTrialCreditForLiveJoin, useCreditBalance } from '../lib/credits';
+import { claimFreeTrialCredits, spendTrialCreditForLiveJoin } from '../lib/credits';
 import { FREE_TRIAL_INITIAL_CREDITS, PAID_PLANS_ENABLED } from '../lib/config';
 import { supabase } from '../lib/supabase';
 import {
@@ -88,7 +88,6 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   const [filterType, setFilterType] = useState<FilterType>('Top Rated');
   const [specialtyFilter, setSpecialtyFilter] = useState<string>('all');
   const [joiningLiveTutorId, setJoiningLiveTutorId] = useState<string | null>(null);
-  const creditBalance = useCreditBalance();
   const [searchQuery, setSearchQuery] = useState('');
   const [tutorsList, setTutorsList] = useState<Tutor[]>([]);
   const [tutorSchedule, setTutorSchedule] = useState<any[]>([]);
@@ -797,10 +796,18 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2 flex-wrap">
                     <p className="font-bold text-gray-800 text-sm truncate">{s.subject}</p>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${
-                      s.status === 'live' ? 'bg-red-100 text-red-700 animate-pulse' : 'bg-green-100 text-green-700'
+                    <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-0.5 rounded-full flex-shrink-0 ${
+                      s.status === 'live'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
+                        : 'bg-green-100 text-green-700'
                     }`}>
-                      {s.status === 'live' ? t('LIVE NOW', 'مباشر الآن') : t('confirmed', 'مؤكدة')}
+                      {s.status === 'live' && (
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                        </span>
+                      )}
+                      {s.status === 'live' ? t('LIVE NOW', 'مباشر الآن', 'En direct') : t('confirmed', 'مؤكدة', 'confirmé')}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 mt-0.5 truncate">{s.tutorName}</p>
@@ -1402,33 +1409,13 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             </button>
           ))}
         </div>
-        {/* Free Trial Credits quick status strip */}
-        {!PAID_PLANS_ENABLED && (
-          <div className="mx-4 mt-3 bg-emerald-50 border border-emerald-200 rounded-2xl px-3.5 py-2.5 flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <p className="text-xs font-bold text-emerald-900 truncate">
-                {t(`🎁 Free Trial: ${creditBalance} Credits Left`, `🎁 تجربة مجانية: لديك ${creditBalance} رصيد متبقي`, `🎁 Essai gratuit : ${creditBalance} crédits restants`)}
-              </p>
-              <p className="text-[10px] text-emerald-700 truncate">
-                {t('Join any live Zoom session free (1 trial credit)', 'انضم لأي حصة زوم مباشرة مجاناً (1 رصيد تجريبي)', 'Rejoignez n\'importe quel cours en direct (1 crédit)')}
-              </p>
-            </div>
-            <button
-              onClick={() => nav('packages')}
-              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-bold flex-shrink-0 transition-colors"
-            >
-              {creditBalance <= 2 ? t('Claim Free', 'استلام مجاني') : t('Details', 'التفاصيل')}
-            </button>
-          </div>
-        )}
-
         {/* Active Live Zoom Sessions banner for approved teachers currently live */}
         {liveApprovedTutors.length > 0 && (
           <div className="mx-4 mt-3 space-y-2">
             {liveApprovedTutors.map(liveTutor => (
               <div
                 key={`live-banner-${liveTutor.id}`}
-                className="bg-gradient-to-r from-red-600 to-rose-600 text-white rounded-2xl p-3.5 shadow-lg shadow-red-200/60 flex items-center justify-between gap-3"
+                className="bg-gradient-to-r from-emerald-600 to-green-600 text-white rounded-2xl p-3.5 shadow-lg shadow-emerald-200/60 flex items-center justify-between gap-3"
               >
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="relative flex-shrink-0">
@@ -1437,14 +1424,18 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                       alt={liveTutor.name}
                       className="w-10 h-10 rounded-xl object-cover border-2 border-white/60"
                     />
-                    <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-400 border-2 border-red-600 rounded-full animate-ping" />
+                    <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-200 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-300 border-2 border-emerald-600" />
+                    </span>
                   </div>
                   <div className="min-w-0">
-                    <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider bg-white/20 px-2 py-0.5 rounded-full">
-                      ● {t('LIVE ZOOM NOW', 'بث زوم مباشر الآن')}
+                    <span className="inline-flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider bg-white/20 px-2 py-0.5 rounded-full">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-pulse" />
+                      {t('LIVE ZOOM NOW', 'بث زوم مباشر الآن', 'En direct')}
                     </span>
                     <p className="font-bold text-sm truncate mt-0.5">{liveTutor.name}</p>
-                    <p className="text-[11px] text-red-100 truncate">
+                    <p className="text-[11px] text-emerald-100 truncate">
                       {liveTutor.activeSessionSubject || liveTutor.subjects[0] || liveTutor.category}
                     </p>
                   </div>
@@ -1452,10 +1443,10 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                 <button
                   onClick={() => handleJoinLiveTutorSession(liveTutor)}
                   disabled={joiningLiveTutorId === liveTutor.id}
-                  className="px-3.5 py-2 bg-white text-red-600 hover:bg-red-50 rounded-xl text-xs font-extrabold shadow flex items-center gap-1.5 flex-shrink-0 transition-all active:scale-95 disabled:opacity-60"
+                  className="px-3.5 py-2 bg-white text-emerald-700 hover:bg-emerald-50 rounded-xl text-xs font-extrabold shadow flex items-center gap-1.5 flex-shrink-0 transition-all active:scale-95 disabled:opacity-60"
                 >
                   <Video className="w-3.5 h-3.5" />
-                  {t('Join Live', 'انضمام الآن')}
+                  {t('Join Live', 'انضمام الآن', 'Rejoindre')}
                 </button>
               </div>
             ))}
@@ -1560,9 +1551,13 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                       {tutor.isLive && tutor.activeSessionUrl && (
                         <span
                           onClick={e => { e.stopPropagation(); handleJoinLiveTutorSession(tutor); }}
-                          className="inline-flex items-center gap-1 text-[10px] font-extrabold bg-red-600 text-white px-2.5 py-1 rounded-lg shadow-sm animate-pulse cursor-pointer"
+                          className="inline-flex items-center gap-1.5 text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg shadow-sm cursor-pointer hover:bg-emerald-100 transition-colors"
                         >
-                          <Video className="w-3 h-3" /> {t('LIVE · Join Now', 'مباشر · انضم الآن')}
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                          </span>
+                          <Video className="w-3 h-3" /> {t('LIVE · Join Now', 'مباشر · انضم الآن', 'En direct · Rejoindre')}
                         </span>
                       )}
                       {tutor.languages.map(l => (
@@ -1908,11 +1903,17 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           {liveApprovedTutors.length > 0 && (
             <button
               onClick={() => setSpecialtyFilter('live')}
-              className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-all flex items-center gap-1 ${
-                specialtyFilter === 'live' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-600 hover:bg-red-100'
+              className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-all inline-flex items-center gap-1.5 ${
+                specialtyFilter === 'live'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200/80 hover:bg-emerald-100'
               }`}
             >
-              ● {t('Live Now', 'مباشر الآن')} ({liveApprovedTutors.length})
+              <span className="relative flex h-2 w-2">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${specialtyFilter === 'live' ? 'bg-emerald-200' : 'bg-emerald-400'}`} />
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${specialtyFilter === 'live' ? 'bg-white' : 'bg-emerald-500'}`} />
+              </span>
+              {t('Live Now', 'مباشر الآن', 'En direct')} ({liveApprovedTutors.length})
             </button>
           )}
           {availableSpecialties.map(spec => (
@@ -2025,15 +2026,36 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               {tutor.subjects.length > 3 && (
                 <span className="text-[10px] text-gray-400 font-medium">+{tutor.subjects.length - 3} more</span>
               )}
-              <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                tutor.isLive ? 'bg-red-100 text-red-600 animate-pulse font-extrabold' :
-                tutor.isOnline ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'
+              <span className={`ml-auto inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-0.5 rounded-full ${
+                tutor.isLive
+                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80 font-bold'
+                  : tutor.isOnline
+                  ? 'bg-emerald-50 text-emerald-600'
+                  : 'bg-gray-100 text-gray-400'
               }`}>
-                {tutor.isLive ? t('● LIVE NOW', '● مباشر الآن') : tutor.isOnline ? '● Online' : '○ Offline'}
+                {tutor.isLive ? (
+                  <>
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                    </span>
+                    {t('LIVE NOW', 'مباشر الآن', 'En direct')}
+                  </>
+                ) : tutor.isOnline ? (
+                  <>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    {t('Online', 'متصل', 'En ligne')}
+                  </>
+                ) : (
+                  <>
+                    <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+                    {t('Offline', 'غير متصل', 'Hors ligne')}
+                  </>
+                )}
               </span>
             </div>
             {tutor.isLive && tutor.activeSessionUrl && (
-              <div className="mt-3 pt-2.5 border-t border-red-100">
+              <div className="mt-3 pt-2.5 border-t border-emerald-100">
                 <div
                   role="button"
                   tabIndex={0}
@@ -2047,12 +2069,12 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                       handleJoinLiveTutorSession(tutor);
                     }
                   }}
-                  className="w-full py-2.5 px-3 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 shadow-md shadow-red-200 transition-all"
+                  className="w-full py-2.5 px-3 bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 shadow-md shadow-emerald-200 transition-all"
                 >
                   <Video className="w-4 h-4" />
                   {joiningLiveTutorId === tutor.id
-                    ? t('Joining Live Session...', 'جاري الانضمام للحصة...')
-                    : t('🔴 Join Live Zoom Session (1 Free Trial Credit)', '🔴 انضم لحصة زوم المباشرة الآن (1 رصيد تجريبي)')}
+                    ? t('Joining Live Session...', 'جاري الانضمام للحصة...', 'Connexion en cours...')
+                    : t('Join Live Zoom Session (1 Free Trial Credit)', 'انضم لحصة زوم المباشرة الآن (1 رصيد تجريبي)', 'Rejoindre le cours en direct (1 crédit)')}
                 </div>
               </div>
             )}
@@ -2109,25 +2131,28 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
       <div className="flex-1 overflow-y-auto pb-28 -mt-3">
         <div className="bg-white rounded-t-3xl p-4 space-y-4">
           {selectedTutor.isLive && selectedTutor.activeSessionUrl && (
-            <div className="bg-gradient-to-r from-red-600 to-rose-600 rounded-2xl p-4 text-white shadow-lg shadow-red-200/70 space-y-3">
+            <div className="bg-gradient-to-r from-emerald-600 to-green-600 rounded-2xl p-4 text-white shadow-lg shadow-emerald-200/70 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider bg-white/20 px-2.5 py-1 rounded-full">
-                  <span className="w-2 h-2 bg-green-300 rounded-full animate-ping" />
-                  {t('LIVE ZOOM SESSION OPEN', 'حصة زوم مباشرة مفتوحة الآن')}
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider bg-white/20 px-2.5 py-1 rounded-full">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-200 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-white" />
+                  </span>
+                  {t('LIVE ZOOM SESSION OPEN', 'حصة زوم مباشرة مفتوحة الآن', 'Session en direct ouverte')}
                 </span>
-                <span className="text-xs font-semibold text-red-100">
+                <span className="text-xs font-semibold text-emerald-100">
                   {selectedTutor.activeSessionSubject || selectedTutor.subjects[0] || selectedTutor.category}
                 </span>
               </div>
               <button
                 onClick={() => handleJoinLiveTutorSession(selectedTutor)}
                 disabled={joiningLiveTutorId === selectedTutor.id}
-                className="w-full py-3 bg-white text-red-600 hover:bg-red-50 rounded-xl font-extrabold text-sm shadow flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-60"
+                className="w-full py-3 bg-white text-emerald-700 hover:bg-emerald-50 rounded-xl font-extrabold text-sm shadow flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-60"
               >
                 <Video className="w-4 h-4" />
                 {joiningLiveTutorId === selectedTutor.id
-                  ? t('Joining...', 'جاري الانضمام...')
-                  : t('Join Live Zoom Session Now (1 Free Trial Credit)', 'انضم لحصة زوم المباشرة الآن (1 رصيد تجريبي)')}
+                  ? t('Joining...', 'جاري الانضمام...', 'Connexion...')
+                  : t('Join Live Zoom Session Now (1 Free Trial Credit)', 'انضم لحصة زوم المباشرة الآن (1 رصيد تجريبي)', 'Rejoindre le cours en direct (1 crédit)')}
               </button>
             </div>
           )}
@@ -2459,13 +2484,13 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                   <div className={`flex items-center gap-1 text-[10px] text-gray-400 mt-1 px-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
                     <span>{timeStr}</span>
                     {isMe && (
-                      <span className="font-bold">
+                      <span className="inline-flex items-center">
                         {msg.is_read || msg.status === 'read' ? (
-                          <span className="text-blue-500 font-extrabold">✓✓</span>
+                          <CheckCheck className="w-3.5 h-3.5 text-blue-500" />
                         ) : msg.status === 'delivered' ? (
-                          <span className="text-slate-400">✓✓</span>
+                          <CheckCheck className="w-3.5 h-3.5 text-slate-400" />
                         ) : (
-                          <span className="text-slate-400">✓</span>
+                          <Check className="w-3.5 h-3.5 text-slate-400" />
                         )}
                       </span>
                     )}
