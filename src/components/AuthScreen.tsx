@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Eye, EyeOff, User, GraduationCap, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import { supabase, authLog } from '../lib/supabase';
-import { isAndroidNative, performAndroidGoogleSignIn, getSafeRedirectUrl } from '../lib/androidAuth';
+import { isAndroidNative, performAndroidGoogleSignIn, getSafeRedirectUrl, checkGoogleProviderEnabled } from '../lib/androidAuth';
 
 type Role = 'student' | 'tutor' | 'admin';
 type AuthMode = 'login' | 'register' | 'forgot';
@@ -90,6 +90,7 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
 
         const defaultName = form.name.trim() || trimmedEmail.split('@')[0];
         let userId = '';
+        let activeSession: any = null;
 
         const { data: signUpData, error: authError } = await supabase.auth.signUp({
           email: trimmedEmail,
@@ -103,8 +104,12 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           }
         });
 
-        if (authError) {
-          if (authError.message?.toLowerCase().includes('already registered') || authError.message?.toLowerCase().includes('already exists')) {
+        if (!authError && signUpData?.user) {
+          userId = signUpData.user.id;
+          activeSession = signUpData.session || null;
+        } else if (authError) {
+          const lowerMsg = (authError.message || '').toLowerCase();
+          if (lowerMsg.includes('already registered') || lowerMsg.includes('already exists')) {
             // Attempt automatic sign in if account exists
             const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
               email: trimmedEmail,
@@ -121,36 +126,96 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
               );
             }
             userId = signInData.user.id;
+            activeSession = signInData.session;
           } else {
-            throw authError;
+            // Fallback to server-side register_user_account RPC if Supabase SMTP rate limit (429) or mailer error occurs
+            const { data: rpcReg, error: rpcErr } = await supabase.rpc('register_user_account', {
+              p_email: trimmedEmail,
+              p_password: form.password,
+              p_full_name: defaultName,
+              p_role: createdRole
+            });
+            if (rpcErr || rpcReg?.error) {
+              throw authError;
+            }
+            if (rpcReg?.user_id) {
+              userId = rpcReg.user_id;
+            }
           }
-        } else {
-          userId = signUpData?.user?.id || '';
         }
 
-        // Try immediate password sign in to get active Supabase session
-        if (!signUpData?.session && trimmedEmail && form.password) {
+        // Try immediate password sign in if signUp did not return an active session
+        if (!activeSession && trimmedEmail && form.password) {
           try {
-            const { data: directSignIn } = await supabase.auth.signInWithPassword({
+            const { data: directSignIn, error: directErr } = await supabase.auth.signInWithPassword({
               email: trimmedEmail,
               password: form.password
             });
-            if (directSignIn?.user) {
+            if (directSignIn?.user && directSignIn?.session) {
               userId = directSignIn.user.id;
+              activeSession = directSignIn.session;
+            } else if (directErr) {
+              // Ensure account is confirmed via RPC and retry sign in once
+              await supabase.rpc('register_user_account', {
+                p_email: trimmedEmail,
+                p_password: form.password,
+                p_full_name: defaultName,
+                p_role: createdRole
+              });
+              const { data: retrySignIn } = await supabase.auth.signInWithPassword({
+                email: trimmedEmail,
+                password: form.password
+              });
+              if (retrySignIn?.user && retrySignIn?.session) {
+                userId = retrySignIn.user.id;
+                activeSession = retrySignIn.session;
+              }
             }
           } catch (_) {}
         }
 
-        const activeId = userId || signUpData?.user?.id || `usr-${Date.now()}`;
+        const activeId = userId || signUpData?.user?.id || '';
+
+        if (!activeSession) {
+          setSuccessInfo(
+            t(
+              'Account created! Please check your email inbox to confirm your account, then sign in.',
+              'تم إنشاء الحساب! يرجى مراجعة بريدك الإلكتروني لتأكيد حسابك ثم تسجيل الدخول.',
+              'Compte créé ! Veuillez vérifier votre e-mail pour confirmer votre compte, puis connectez-vous.'
+            )
+          );
+          setMode('login');
+          setLoading(false);
+          return;
+        }
 
         if (activeId) {
           try {
-            await supabase.from('profiles').upsert({
-              user_id: activeId,
-              full_name: defaultName,
-              role: createdRole
-            });
+            await supabase.from('profiles').upsert(
+              {
+                user_id: activeId,
+                full_name: defaultName,
+                role: createdRole
+              },
+              { onConflict: 'user_id' }
+            );
           } catch (_) {}
+
+          if (createdRole === 'tutor') {
+            try {
+              await supabase.from('tutors').upsert(
+                {
+                  user_id: activeId,
+                  name: defaultName,
+                  name_ar: defaultName,
+                  email: trimmedEmail,
+                  status: 'pending',
+                  is_verified: false
+                },
+                { onConflict: 'user_id', ignoreDuplicates: true }
+              );
+            } catch (_) {}
+          }
         }
 
         const newUser = {
@@ -172,32 +237,38 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         const isRoleAdmin = role === 'admin';
 
         if (isRoleAdmin || isExactAdminEmail) {
-          let adminId = 'ad000000-0000-0000-0000-000000000000';
-          let adminFullName = 'System Administrator';
+          const { data: authData, error: adminAuthError } = await supabase.auth.signInWithPassword({
+            email: trimmedEmail,
+            password: form.password
+          });
 
-          try {
-            const { data: authData } = await supabase.auth.signInWithPassword({
-              email: trimmedEmail,
-              password: form.password
-            });
-            if (authData?.user) {
-              adminId = authData.user.id;
-            }
-          } catch (e) {
-            // Fallback to primary admin ID
+          if (adminAuthError || !authData?.user || !authData?.session) {
+            throw new Error(
+              adminAuthError?.message ||
+              t(
+                'Admin sign-in failed. Please verify your admin credentials and database setup.',
+                'فشل تسجيل دخول المشرف. يرجى التحقق من بيانات المشرف وإعداد قاعدة البيانات.'
+              )
+            );
           }
 
+          const adminId = authData.user.id;
+          const adminFullName = authData.user.user_metadata?.full_name || 'System Administrator';
+
           try {
-            await supabase.from('profiles').upsert({
-              user_id: adminId,
-              full_name: adminFullName,
-              role: 'admin'
-            });
+            await supabase.from('profiles').upsert(
+              {
+                user_id: adminId,
+                full_name: adminFullName,
+                role: 'admin'
+              },
+              { onConflict: 'user_id' }
+            );
           } catch (_) {}
 
           const adminUser = {
             name: adminFullName,
-            email: trimmedEmail || 'admin@demo.com',
+            email: authData.user.email || trimmedEmail,
             role: 'admin' as Role,
             id: adminId
           };
@@ -233,11 +304,14 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         if (!profile) {
           const defaultName = data.user.user_metadata?.full_name || trimmedEmail.split('@')[0];
           try {
-            await supabase.from('profiles').upsert({
-              user_id: data.user.id,
-              full_name: defaultName,
-              role: userRole
-            });
+            await supabase.from('profiles').upsert(
+              {
+                user_id: data.user.id,
+                full_name: defaultName,
+                role: userRole
+              },
+              { onConflict: 'user_id' }
+            );
           } catch (_) {}
           profile = { full_name: defaultName, role: userRole };
         }
@@ -306,6 +380,16 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         return;
       }
 
+      const providerStatus = await checkGoogleProviderEnabled();
+      if (!providerStatus.enabled) {
+        setError(t(
+          'Google Sign-In is not enabled yet in Supabase (Authentication → Providers → Google). Please enable it with your Google OAuth Client ID and Secret.',
+          'تسجيل الدخول عبر جوجل غير مفعّل بعد في إعدادات Supabase (Authentication → Providers → Google). يرجى تفعيله أولاً.',
+          'La connexion Google n\'est pas encore activée dans Supabase (Authentication → Providers → Google).'
+        ));
+        return;
+      }
+
       const redirectUri = getSafeRedirectUrl();
       authLog(`Initiating web signInWithOAuth to redirectUri: ${redirectUri}`);
 
@@ -313,7 +397,10 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         provider: 'google',
         options: {
           redirectTo: redirectUri,
-          queryParams: { role }
+          queryParams: {
+            prompt: 'select_account',
+            access_type: 'offline'
+          }
         }
       });
 
