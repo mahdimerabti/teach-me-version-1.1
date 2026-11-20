@@ -69,7 +69,7 @@ export const getSafeRedirectUrl = (): string => {
     return PRODUCTION_WEB_URL;
   }
 
-  const webRedirect = `${origin}/`;
+  const webRedirect = origin;
   authLog(`Using Web redirect URI: ${webRedirect}`);
   return webRedirect;
 };

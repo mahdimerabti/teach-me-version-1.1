@@ -140,6 +140,7 @@ export default function App() {
   useEffect(() => {
     let appUrlListener: any = null;
     let isMounted = true;
+    let initialResolved = false;
 
     // 1. Global Capacitor Deep-Link listener for Mobile App
     const CapacitorApp = (window as any).Capacitor?.Plugins?.App;
@@ -162,37 +163,84 @@ export default function App() {
     // Safety ceiling timer so splash can never hang indefinitely on offline networks
     const loadingTimeout = setTimeout(() => {
       if (isMounted) setIsAuthLoading(false);
-    }, 4000);
+    }, 6000);
 
-    // 2. Complete & deterministic auth initialization flow (prevents any dashboard flash or FOUC)
+    const cleanOAuthParamsFromUrl = () => {
+      if (typeof window === 'undefined') return;
+      const hasParams =
+        window.location.search.includes('code=') ||
+        window.location.hash.includes('access_token=') ||
+        window.location.hash.includes('refresh_token=');
+      if (!hasParams) return;
+      if (window.location.protocol !== 'file:') {
+        window.history.replaceState(null, '', window.location.pathname);
+      } else {
+        window.location.hash = '';
+      }
+    };
+
+    // 2. Register a single onAuthStateChange listener FIRST so no SIGNED_IN / INITIAL_SESSION event is ever missed
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      authLog(`onAuthStateChange event fired: "${event}", userId: "${session?.user?.id || 'none'}"`);
+
+      if (event === 'SIGNED_OUT') {
+        authLog('User signed out event received. Clearing state & directing to login.');
+        localStorage.removeItem('tm_user_session');
+        localStorage.removeItem('tm_pending_oauth_role');
+        if (isMounted) {
+          setUser(null);
+          setTutorProfile(null);
+          setTutorRegistered(false);
+          setAppState('auth');
+          setIsAuthLoading(false);
+        }
+        return;
+      }
+
+      if (session?.user && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED')) {
+        cleanOAuthParamsFromUrl();
+        await handleSessionUser(session.user);
+        if (isMounted) {
+          initialResolved = true;
+          setIsAuthLoading(false);
+          clearTimeout(loadingTimeout);
+        }
+      }
+    });
+
+    // 3. Deterministic auth initialization:
+    //    CRITICAL: Always await supabase.auth.getSession() FIRST so @supabase/auth-js
+    //    (detectSessionInUrl: true, flowType: 'pkce') finishes its internal PKCE ?code= exchange
+    //    WITHOUT racing against a duplicate exchangeCodeForSession() or stripping ?code= prematurely.
     const initAuth = async () => {
       authLog('Starting initAuth execution...');
       try {
-        // Handle Android WebView / OAuth hash (#access_token=...) or PKCE query (?code=...) callbacks first
-        if (typeof window !== 'undefined') {
+        authLog('Awaiting supabase.auth.getSession() (allows detectSessionInUrl PKCE exchange to finish)...');
+        let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          authLog(`getSession notice: ${sessionError.message}`);
+        }
+
+        // Fallback ONLY if getSession() did not yet produce a session and OAuth params remain in URL
+        // (e.g., Android WebView file:///android_asset/index.html#access_token=... or ?code=...)
+        if (!session && typeof window !== 'undefined') {
           const fullUrl = window.location.href;
           if (fullUrl.includes('access_token=') || fullUrl.includes('code=')) {
-            authLog('OAuth callback parameters detected on initial load; processing tokens...');
-            await handleOAuthDeepLink(fullUrl);
-            if (window.location.protocol !== 'file:') {
-              window.history.replaceState(null, '', window.location.pathname);
-            } else {
-              window.location.hash = '';
+            authLog('Session not yet hydrated from URL; running handleOAuthDeepLink fallback...');
+            const ok = await handleOAuthDeepLink(fullUrl);
+            if (ok) {
+              const retry = await supabase.auth.getSession();
+              session = retry.data.session;
             }
           }
         }
 
-        authLog('Querying supabase.auth.getSession()...');
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          authLog(`getSession error notice: ${sessionError.message}`);
-        }
-
         if (session?.user) {
+          cleanOAuthParamsFromUrl();
           authLog(`Active Supabase session retrieved for user: ${session.user.id}`);
           await handleSessionUser(session.user);
-        } else {
-          // Clear any stale localStorage session that has no valid Supabase JWT
+          initialResolved = true;
+        } else if (!initialResolved) {
           if (localStorage.getItem('tm_user_session')) {
             authLog('No active Supabase JWT session found; clearing stale local session.');
             localStorage.removeItem('tm_user_session');
@@ -205,7 +253,7 @@ export default function App() {
         }
       } catch (err: any) {
         authLog(`initAuth exception caught: ${err?.message || err}`);
-        if (isMounted) {
+        if (isMounted && !initialResolved) {
           setAppState('auth');
         }
       } finally {
@@ -218,29 +266,6 @@ export default function App() {
     };
 
     initAuth();
-
-    // 3. Listen to Supabase auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      authLog(`onAuthStateChange event fired: "${event}", userId: "${session?.user?.id || 'none'}"`);
-      if (event === 'INITIAL_SESSION') {
-        return; // Handled deterministically by initAuth() above to prevent double-render flashes
-      }
-      if (session?.user) {
-        await handleSessionUser(session.user);
-        if (isMounted) setIsAuthLoading(false);
-      } else if (event === 'SIGNED_OUT') {
-        authLog('User signed out event received. Clearing state & directing to login.');
-        localStorage.removeItem('tm_user_session');
-        localStorage.removeItem('tm_pending_oauth_role');
-        if (isMounted) {
-          setUser(null);
-          setTutorProfile(null);
-          setTutorRegistered(false);
-          setAppState('auth');
-          setIsAuthLoading(false);
-        }
-      }
-    });
 
     return () => {
       isMounted = false;
