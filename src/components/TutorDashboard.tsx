@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, Star, Users, Clock, MessageSquare, Calendar,
   CheckCircle, Send, ChevronRight, Bell, LogOut, User,
@@ -22,6 +22,7 @@ import {
   type DBConversation,
   type DBMessage
 } from '../lib/messagingService';
+import { triggerLivePushEdgeFunction } from '../lib/pushNotifications';
 
 interface TutorDashboardProps {
   user: { name: string; email: string; id: string };
@@ -43,9 +44,10 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   const [submittingAnswer, setSubmittingAnswer] = useState<string | null>(null);
 
   const [tutorId, setTutorId] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>('pending');
-  const [dbRating, setDbRating] = useState<number>(4.9);
-  const [dbReviewCount, setDbReviewCount] = useState<number>(1);
+  const [status, setStatus] = useState<string>(profile?.status || 'pending');
+  const [hasLoadedStatus, setHasLoadedStatus] = useState(false);
+  const [dbRating, setDbRating] = useState<number | null>(null);
+  const [dbReviewCount, setDbReviewCount] = useState<number>(0);
   const [sessions, setSessions] = useState<any[]>([]);
   const [dbSchedules, setDbSchedules] = useState<any[]>([]);
   const [studentNames, setStudentNames] = useState<Record<string, string>>({});
@@ -57,11 +59,18 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   const [totalUnreadMessages, setTotalUnreadMessages] = useState(0);
   const [convSearch, setConvSearch] = useState('');
 
-  // Profile & Schedule Edit Modals
+  // Profile & Schedule Edit Modals (real fields saved to public.tutors)
   const [isEditingProfileModal, setIsEditingProfileModal] = useState(false);
   const [editBio, setEditBio] = useState(profile?.bio || '');
-  const [editHourlyRate, setEditHourlyRate] = useState(profile?.hourlyRate || 2500);
-  const [editCategory, setEditCategory] = useState(profile?.category || 'Mathematics');
+  const [editHourlyRate, setEditHourlyRate] = useState<number>(profile?.hourlyRate || 0);
+  const [editCategory, setEditCategory] = useState(profile?.category || '');
+  const [editSubjects, setEditSubjects] = useState<string[]>(profile?.subjects || []);
+  const [newSubjectInput, setNewSubjectInput] = useState('');
+  const [editLanguages, setEditLanguages] = useState<string[]>(profile?.languages || []);
+  const [newLanguageInput, setNewLanguageInput] = useState('');
+  const [editExperienceYears, setEditExperienceYears] = useState<number>(profile?.experienceYears || 0);
+  const [editAvatarUrl, setEditAvatarUrl] = useState<string>(profile?.avatarUrl || '');
+  const [avatarUploading, setAvatarUploading] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [profileSuccessMsg, setProfileSuccessMsg] = useState<string | null>(null);
 
@@ -76,8 +85,12 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   useEffect(() => {
     if (profile) {
       setEditBio(profile.bio || '');
-      setEditHourlyRate(profile.hourlyRate || 2500);
-      setEditCategory(profile.category || 'Mathematics');
+      setEditHourlyRate(profile.hourlyRate || 0);
+      setEditCategory(profile.category || '');
+      setEditSubjects(profile.subjects || []);
+      setEditLanguages(profile.languages || []);
+      setEditExperienceYears(profile.experienceYears || 0);
+      setEditAvatarUrl(profile.avatarUrl || '');
     }
   }, [profile]);
 
@@ -95,6 +108,34 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday'
   };
 
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id) return;
+    if (file.size > 5 * 1024 * 1024) {
+      alert(t('File size exceeds 5MB', 'حجم الملف يتجاوز 5 ميغابايت', 'La taille dépasse 5 Mo'));
+      return;
+    }
+    if (!file.type.startsWith('image/')) {
+      alert(t('Only image files are allowed', 'يسمح بملفات الصور فقط', 'Seules les images sont autorisées'));
+      return;
+    }
+    setAvatarUploading(true);
+    try {
+      const fileExt = file.name.split('.').pop() || 'jpg';
+      const filePath = `avatar-${user.id}-${Date.now()}.${fileExt}`;
+      const { error: uploadErr } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, { cacheControl: '3600', upsert: true });
+      if (uploadErr) throw uploadErr;
+      const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(filePath);
+      setEditAvatarUrl(publicUrl);
+    } catch (err: any) {
+      alert(t('Photo upload failed: ', 'فشل رفع الصورة: ') + (err?.message || err));
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
   const handleSaveProfileModal = async () => {
     if (!user?.id) return;
     setIsSavingProfile(true);
@@ -110,24 +151,46 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
         }
       }
 
-      const { data: savedTutor, error: tutErr } = await supabase.from('tutors').upsert({
-        ...(realTutorId ? { id: realTutorId } : {}),
+      const cleanBio = editBio.trim().slice(0, 600);
+      const cleanRate = Math.max(0, Number(editHourlyRate) || 0);
+      const cleanExp = Math.max(0, Math.min(60, Number(editExperienceYears) || 0));
+      const cleanSubjects = editSubjects.map(s => s.trim()).filter(Boolean);
+      const cleanLanguages = editLanguages.map(l => l.trim()).filter(Boolean);
+
+      const updatePayload: any = {
         user_id: user.id,
         name: user.name,
-        bio: editBio,
-        hourly_rate: Number(editHourlyRate) || 1500,
-        category: editCategory,
-        status: status || 'pending'
-      }).select('id').maybeSingle();
+        bio: cleanBio,
+        hourly_rate: cleanRate,
+        category: editCategory.trim(),
+        subjects: cleanSubjects,
+        languages: cleanLanguages,
+        experience_years: cleanExp,
+        avatar_url: editAvatarUrl || null
+      };
+      if (realTutorId) {
+        updatePayload.id = realTutorId;
+      } else {
+        updatePayload.status = 'pending';
+      }
+
+      const { data: savedTutor, error: tutErr } = await supabase
+        .from('tutors')
+        .upsert(updatePayload, { onConflict: 'user_id' })
+        .select('id')
+        .maybeSingle();
 
       if (tutErr) throw tutErr;
       if (savedTutor?.id) setTutorId(savedTutor.id);
 
-      await supabase.from('profiles').upsert({
-        user_id: user.id,
-        full_name: user.name,
-        role: 'tutor'
-      });
+      await supabase.from('profiles').upsert(
+        {
+          user_id: user.id,
+          full_name: user.name,
+          avatar_url: editAvatarUrl || null
+        },
+        { onConflict: 'user_id' }
+      );
 
       setProfileSuccessMsg(t('Profile updated successfully!', 'تم تحديث الملف الشخصي بنجاح!', 'Profil mis à jour!'));
       setTimeout(() => {
@@ -152,11 +215,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
         startTime: s.start_time ? String(s.start_time).slice(0, 5) : '09:00',
         endTime: s.end_time ? String(s.end_time).slice(0, 5) : '10:00'
       };
-    }) : [
-      { day: 'Sunday', startTime: '09:00', endTime: '10:00' },
-      { day: 'Tuesday', startTime: '14:00', endTime: '15:00' },
-      { day: 'Thursday', startTime: '16:00', endTime: '17:00' }
-    ];
+    }) : [];
     setEditScheduleList(current);
     setIsEditingScheduleModal(true);
   };
@@ -180,14 +239,17 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     }
 
     if (!realTutorId && user?.id) {
-      const { data: createdTutor } = await supabase.from('tutors').upsert({
-        user_id: user.id,
-        name: user.name,
-        bio: editBio || 'Tutor Profile',
-        hourly_rate: Number(editHourlyRate) || 1500,
-        category: editCategory || 'General',
-        status: status || 'pending'
-      }).select('id').maybeSingle();
+      const { data: createdTutor } = await supabase.from('tutors').upsert(
+        {
+          user_id: user.id,
+          name: user.name,
+          bio: editBio || 'Tutor Profile',
+          hourly_rate: Number(editHourlyRate) || 1500,
+          category: editCategory || 'General',
+          status: 'pending'
+        },
+        { onConflict: 'user_id' }
+      ).select('id').maybeSingle();
       if (createdTutor?.id) {
         realTutorId = createdTutor.id;
         setTutorId(realTutorId);
@@ -318,85 +380,130 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     }
   };
 
-  useEffect(() => {
-    supabase
+  const loadTutorData = useCallback(async () => {
+    if (!user?.id) return;
+    const { data, error } = await supabase
       .from('tutors')
-      .select('id, status, rating, review_count')
+      .select('id, status, rating, review_count, bio, hourly_rate, category, subjects, languages, experience_years, avatar_url')
       .eq('user_id', user.id)
-      .single()
-      .then(async ({ data }) => {
-        if (data) {
-          setTutorId(data.id);
-          setStatus(data.status);
-          if (data.rating) setDbRating(Number(data.rating));
-          if (data.review_count) setDbReviewCount(Number(data.review_count));
-          
-          const { data: scheds } = await supabase
-            .from('schedules')
-            .select('*')
-            .eq('tutor_id', data.id);
-          if (scheds) {
-            setDbSchedules(scheds);
-          }
+      .maybeSingle();
 
-          const { data: sessData } = await supabase
-            .from('sessions')
-            .select('*')
-            .eq('tutor_id', data.id);
+    if (error) {
+      console.warn('Error loading tutor status:', error.message);
+      return;
+    }
 
-          const { data: qData } = await supabase
-            .from('questions')
-            .select('*')
-            .eq('tutor_id', data.id);
+    if (data) {
+      setTutorId(data.id);
+      setStatus((data.status || 'pending').toLowerCase());
+      setHasLoadedStatus(true);
+      const revCount = Number(data.review_count || 0);
+      setDbReviewCount(revCount);
+      setDbRating(revCount > 0 && data.rating != null ? Number(data.rating) : null);
+      setEditBio(data.bio || '');
+      setEditHourlyRate(Number(data.hourly_rate || 0));
+      setEditCategory(data.category || '');
+      setEditSubjects(Array.isArray(data.subjects) ? data.subjects : []);
+      setEditLanguages(Array.isArray(data.languages) ? data.languages : []);
+      setEditExperienceYears(Number(data.experience_years || 0));
+      setEditAvatarUrl(data.avatar_url || '');
 
-          const studentIdsSet = new Set<string>();
-          if (sessData) {
-            sessData.forEach(s => studentIdsSet.add(s.student_id));
-          }
-          if (qData) {
-            qData.forEach(q => studentIdsSet.add(q.student_id));
-          }
-          const studentIds = Array.from(studentIdsSet);
+      const [{ data: scheds }, { data: sessData }, { data: qData }] = await Promise.all([
+        supabase.from('schedules').select('*').eq('tutor_id', data.id),
+        supabase.from('sessions').select('*').eq('tutor_id', data.id),
+        supabase.from('questions').select('*').eq('tutor_id', data.id)
+      ]);
 
-          let studentMapping: Record<string, string> = {};
-          if (studentIds.length > 0) {
-            const { data: profiles } = await supabase
-              .from('profiles')
-              .select('user_id, full_name')
-              .in('user_id', studentIds);
-            if (profiles) {
-              studentMapping = profiles.reduce((acc: any, curr: any) => {
-                acc[curr.user_id] = curr.full_name;
-                return acc;
-              }, {});
-              setStudentNames(studentMapping);
-            }
-          }
+      if (scheds) {
+        setDbSchedules(scheds);
+      }
 
-          if (sessData) {
-            setSessions(sessData);
-          }
+      const studentIdsSet = new Set<string>();
+      if (sessData) {
+        sessData.forEach(s => studentIdsSet.add(s.student_id));
+      }
+      if (qData) {
+        qData.forEach(q => studentIdsSet.add(q.student_id));
+      }
+      const studentIds = Array.from(studentIdsSet);
 
-          if (qData) {
-            const mappedQuestions = qData.map((q: any) => {
-              const name = studentMapping[q.student_id] || 'Student';
-              return {
-                id: q.id,
-                studentName: name,
-                studentAvatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=3B82F6&color=fff`,
-                subject: q.subject,
-                question: q.question,
-                answer: q.answer,
-                isAnswered: q.is_answered,
-                createdAt: q.created_at,
-                answeredAt: q.answered_at
-              };
-            });
-            setQuestions(mappedQuestions);
-          }
+      let studentMapping: Record<string, string> = {};
+      if (studentIds.length > 0) {
+        const { data: profiles } = await supabase.rpc('get_participant_profiles', {
+          p_user_ids: studentIds
+        });
+        if (Array.isArray(profiles)) {
+          studentMapping = profiles.reduce((acc: any, curr: any) => {
+            acc[curr.user_id] = curr.full_name;
+            return acc;
+          }, {});
+          setStudentNames(studentMapping);
         }
-      });
+      }
+
+      if (sessData) {
+        setSessions(sessData);
+      }
+
+      if (qData) {
+        const mappedQuestions = qData.map((q: any) => {
+          const name = studentMapping[q.student_id] || 'Student';
+          return {
+            id: q.id,
+            studentName: name,
+            studentAvatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=3B82F6&color=fff`,
+            subject: q.subject,
+            question: q.question,
+            answer: q.answer,
+            isAnswered: q.is_answered,
+            createdAt: q.created_at,
+            answeredAt: q.answered_at
+          };
+        });
+        setQuestions(mappedQuestions);
+      }
+    }
   }, [user.id]);
+
+  useEffect(() => {
+    loadTutorData();
+
+    // Realtime subscription for instant approval propagation & session updates
+    const tutorChannel = supabase
+      .channel(`tutor-status-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tutors', filter: `user_id=eq.${user.id}` },
+        (payload: any) => {
+          if (payload?.new?.status) {
+            setStatus(String(payload.new.status).toLowerCase());
+            setHasLoadedStatus(true);
+          }
+          loadTutorData();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'sessions' },
+        () => {
+          loadTutorData();
+        }
+      )
+      .subscribe();
+
+    const onFocus = () => loadTutorData();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') loadTutorData();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      supabase.removeChannel(tutorChannel);
+    };
+  }, [user.id, loadTutorData]);
 
   const t = (en: string, ar: string, fr?: string) => {
     if (language === 'ar') return ar;
@@ -482,7 +589,9 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
       status: s.status
     }));
 
-  const isApprovedByAdmin = status === 'approved' || profile?.status === 'approved';
+  const isApprovedByAdmin = hasLoadedStatus
+    ? status === 'approved'
+    : (status === 'approved' || profile?.status === 'approved');
 
   const handleStartLesson = async (sessionId: string, liveRoomId?: string) => {
     if (!isApprovedByAdmin) {
@@ -494,15 +603,46 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
       return;
     }
 
-    const roomId = liveRoomId || `teachme-room-${sessionId.slice(0, 8)}`;
+    // Preserve the session's UUID live_room_id so student & tutor join the exact same room
+    let roomId = liveRoomId || sessionId;
+    let sessionSubject = profile?.subjects?.[0] || profile?.category || 'Live Lesson';
     try {
-      await supabase
+      const { data: updatedSess, error: updateErr } = await supabase
         .from('sessions')
-        .update({ status: 'live', live_room_id: roomId })
-        .eq('id', sessionId);
+        .update({ status: 'live' })
+        .eq('id', sessionId)
+        .select('live_room_id, subject')
+        .maybeSingle();
+
+      if (updateErr) {
+        console.warn('Notice updating session status to live:', updateErr.message);
+      } else if (updatedSess?.live_room_id) {
+        roomId = updatedSess.live_room_id;
+        if (updatedSess.subject) sessionSubject = updatedSess.subject;
+        setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, status: 'live' } : s)));
+      }
     } catch (e) {
       console.warn('Notice updating session status:', e);
     }
+
+    // Broadcast teacher's active live Zoom room on public.tutors so students see LIVE NOW immediately
+    try {
+      const { data: liveRes } = await supabase.rpc('start_tutor_live_session', {
+        p_room_id: roomId,
+        p_subject: sessionSubject
+      });
+      if ((liveRes as any)?.tutor_id) {
+        void triggerLivePushEdgeFunction({
+          tutorId: (liveRes as any).tutor_id,
+          tutorName: displayName,
+          subject: sessionSubject,
+          roomId
+        });
+      }
+    } catch (e) {
+      console.warn('Notice broadcasting tutor live session:', e);
+    }
+
     setActiveMeetingRoomId(roomId);
   };
 
@@ -520,27 +660,61 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     if (!realId && user?.id) {
       const { data: tData } = await supabase.from('tutors').select('id').eq('user_id', user.id).maybeSingle();
       realId = tData?.id || null;
+      if (realId) setTutorId(realId);
     }
-    const roomId = `teachme-zoom-${realId ? realId.slice(0, 8) : user.id.slice(0, 8)}`;
-    
+
+    let roomId = `teachme-zoom-${realId ? realId.slice(0, 8) : user.id.slice(0, 8)}`;
+    let liveSubject = profile?.subjects?.[0] || profile?.category || 'Live Zoom Class';
+
     if (realId) {
       try {
         const { data: activeSess } = await supabase
           .from('sessions')
-          .select('id')
+          .select('id, live_room_id, subject')
           .eq('tutor_id', realId)
+          .in('status', ['confirmed', 'live'])
           .order('date', { ascending: true })
           .limit(1)
           .maybeSingle();
 
         if (activeSess?.id) {
-          await supabase
+          const { error: liveErr } = await supabase
             .from('sessions')
-            .update({ status: 'live', live_room_id: roomId })
+            .update({ status: 'live' })
             .eq('id', activeSess.id);
+          if (liveErr) {
+            console.warn('Notice setting session live:', liveErr.message);
+          } else {
+            setSessions(prev => prev.map(s => (s.id === activeSess.id ? { ...s, status: 'live' } : s)));
+          }
+          if (activeSess.live_room_id) {
+            roomId = activeSess.live_room_id;
+          }
+          if (activeSess.subject) {
+            liveSubject = activeSess.subject;
+          }
         }
       } catch (_) {}
     }
+
+    // Mark tutor as LIVE in public.tutors so matching students can join directly
+    try {
+      const { data: liveRes } = await supabase.rpc('start_tutor_live_session', {
+        p_room_id: roomId,
+        p_subject: liveSubject
+      });
+      if ((liveRes as any)?.tutor_id) {
+        void triggerLivePushEdgeFunction({
+          tutorId: (liveRes as any).tutor_id,
+          tutorName: displayName,
+          subject: liveSubject,
+          roomId
+        });
+      }
+    } catch (e) {
+      console.warn('Notice broadcasting tutor live session:', e);
+    }
+
     setActiveMeetingRoomId(roomId);
   };
 
@@ -566,7 +740,10 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
         userId={user.id}
         isTutor={true}
         language={language}
-        onClose={() => setActiveMeetingRoomId(null)}
+        onClose={() => {
+          setActiveMeetingRoomId(null);
+          supabase.rpc('end_tutor_live_session').then(() => {}, () => {});
+        }}
       />
     );
   }
@@ -641,7 +818,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
             <div className="grid grid-cols-2 gap-3">
               {[
                 { icon: Users, label: t('Total Students', 'إجمالي الطلاب', 'Total des élèves'), value: String(totalStudents), color: 'text-blue-600', bg: 'bg-blue-50' },
-                { icon: Star, label: t('Rating', 'التقييم', 'Évaluation'), value: '4.9', color: 'text-yellow-500', bg: 'bg-yellow-50' },
+                { icon: Star, label: t('Rating', 'التقييم', 'Évaluation'), value: dbReviewCount > 0 && dbRating != null ? `${dbRating.toFixed(1)} (${dbReviewCount})` : '—', color: 'text-yellow-500', bg: 'bg-yellow-50' },
                 { icon: DollarSign, label: t('This Month', 'هذا الشهر', 'Ce mois-ci'), value: `${totalEarnings.toLocaleString()} ${CURRENCY_CODE}`, color: 'text-green-600', bg: 'bg-green-50' },
                 { icon: TrendingUp, label: t('Sessions', 'الجلسات', 'Sessions'), value: String(totalSessionsCount), color: 'text-indigo-600', bg: 'bg-indigo-50' },
               ].map(({ icon: Icon, label, value, color, bg }) => (
@@ -945,7 +1122,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
               {[
                 { label: t('Total Students', 'إجمالي الطلاب', 'Total des élèves'), value: String(totalStudents), icon: Users },
                 { label: t('Sessions Completed', 'الجلسات المكتملة', 'Sessions terminées'), value: String(completedSessions), icon: BookOpen },
-                { label: t('Average Rating', 'متوسط التقييم', 'Évaluation moyenne'), value: `${dbRating.toFixed(1)} ★ (${dbReviewCount})`, icon: Star },
+                { label: t('Average Rating', 'متوسط التقييم', 'Évaluation moyenne'), value: dbReviewCount > 0 && dbRating != null ? `${dbRating.toFixed(1)} (${dbReviewCount})` : t('No reviews yet', 'لا توجد تقييمات بعد', 'Aucun avis'), icon: Star },
                 { label: t('Monthly Earnings', 'الأرباح الشهرية', 'Revenus mensuels'), value: `${totalEarnings.toLocaleString()} ${CURRENCY_CODE}`, icon: DollarSign },
               ].map(({ label, value, icon: Icon }) => (
                 <div key={label} className="flex items-center justify-between py-3 border-b border-gray-50 last:border-0">
@@ -1110,7 +1287,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
         )}
       </div>
 
-      <div className="bg-white border-t border-gray-100 px-2 pt-2 pb-safe grid grid-cols-5 gap-1 sticky bottom-0 z-20">
+      <div className="bg-white border-t border-gray-100 px-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] grid grid-cols-5 gap-1 sticky bottom-0 z-20">
         {([
           { id: 'home', icon: TrendingUp, label: t('Overview', 'نظرة عامة', 'Aperçu') },
           { id: 'messages', icon: MessageSquare, label: t('Messages', 'الرسائل', 'Messages'), badge: totalUnreadMessages },
@@ -1145,7 +1322,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
       {isEditingProfileModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/45 backdrop-blur-sm" onClick={() => setIsEditingProfileModal(false)} />
-          <div className="relative w-full max-w-md bg-white rounded-3xl p-6 shadow-2xl space-y-4 border border-gray-100 z-10 animate-slide-up">
+          <div className="relative w-full max-w-md max-h-[88dvh] overflow-y-auto bg-white rounded-3xl p-5 shadow-2xl space-y-4 border border-gray-100 z-10 animate-slide-up">
             <div className="flex items-center justify-between border-b border-gray-100 pb-3">
               <h3 className="font-bold text-gray-900 text-base">{t('Edit Profile', 'تعديل الملف الشخصي', 'Modifier le profil')}</h3>
               <button onClick={() => setIsEditingProfileModal(false)} className="p-1.5 hover:bg-gray-100 rounded-xl">
@@ -1160,35 +1337,157 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
               </div>
             )}
 
-            <div className="space-y-3">
+            <div className="space-y-3.5">
+              {/* Profile Photo */}
+              <div className="flex items-center gap-3">
+                <img
+                  src={editAvatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'Tutor')}&background=2563EB&color=fff&size=120`}
+                  alt={user.name}
+                  className="w-14 h-14 rounded-2xl object-cover border border-gray-200 flex-shrink-0"
+                />
+                <label className="flex-1 py-2.5 px-3 border border-dashed border-blue-300 bg-blue-50/50 hover:bg-blue-50 text-blue-600 rounded-xl text-xs font-bold text-center cursor-pointer transition-colors">
+                  {avatarUploading ? t('Uploading...', 'جاري الرفع...', 'Téléchargement...') : t('Upload Profile Photo', 'رفع الصورة الشخصية', 'Changer la photo')}
+                  <input type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" disabled={avatarUploading} />
+                </label>
+              </div>
+
+              {/* Bio with 600 char limit */}
               <div>
-                <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Bio / Summary', 'نبذة عنك', 'Bio')}</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-gray-700">{t('Bio / About', 'نبذة عنك', 'À propos')}</label>
+                  <span className="text-[10px] text-gray-400">{editBio.length}/600</span>
+                </div>
                 <textarea
                   value={editBio}
-                  onChange={e => setEditBio(e.target.value)}
+                  onChange={e => setEditBio(e.target.value.slice(0, 600))}
+                  maxLength={600}
                   rows={3}
+                  placeholder={t('Describe your teaching experience and approach...', 'اكتب نبذة عن خبرتك وأسلوبك في التدريس...', 'Décrivez votre expérience...')}
                   className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all resize-none"
                 />
               </div>
 
+              {/* Specialty / Category */}
               <div>
-                <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Hourly Rate (DZD)', 'السعر بالساعة (دج)', 'Tarif horaire')}</label>
-                <input
-                  type="number"
-                  value={editHourlyRate}
-                  onChange={e => setEditHourlyRate(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Teaching Category', 'التخصص الدراسي', 'Matière/Catégorie')}</label>
+                <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Specialty / Category', 'التخصص الرئيسي', 'Spécialité / Catégorie')}</label>
                 <input
                   type="text"
                   value={editCategory}
                   onChange={e => setEditCategory(e.target.value)}
+                  placeholder={t('e.g. School Education, Languages, Technology & Finance', 'مثال: التعليم المدرسي، اللغات...', 'Ex: Éducation, Langues...')}
                   className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all"
                 />
+              </div>
+
+              {/* Subjects */}
+              <div>
+                <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Subjects', 'المواد الدراسية', 'Matières')}</label>
+                <div className="flex gap-1.5 mb-2">
+                  <input
+                    type="text"
+                    value={newSubjectInput}
+                    onChange={e => setNewSubjectInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && newSubjectInput.trim()) {
+                        e.preventDefault();
+                        const val = newSubjectInput.trim();
+                        if (!editSubjects.includes(val)) setEditSubjects(prev => [...prev, val]);
+                        setNewSubjectInput('');
+                      }
+                    }}
+                    placeholder={t('Add subject (e.g. Mathematics)', 'أضف مادة (مثال: الرياضيات)', 'Ajouter une matière')}
+                    className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const val = newSubjectInput.trim();
+                      if (val && !editSubjects.includes(val)) setEditSubjects(prev => [...prev, val]);
+                      setNewSubjectInput('');
+                    }}
+                    className="px-3 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {editSubjects.map(s => (
+                    <span key={s} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-[11px] font-semibold px-2.5 py-1 rounded-full">
+                      {s}
+                      <button type="button" onClick={() => setEditSubjects(prev => prev.filter(x => x !== s))} className="hover:text-red-500">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Languages */}
+              <div>
+                <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Languages', 'اللغات', 'Langues')}</label>
+                <div className="flex gap-1.5 mb-2">
+                  <input
+                    type="text"
+                    value={newLanguageInput}
+                    onChange={e => setNewLanguageInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && newLanguageInput.trim()) {
+                        e.preventDefault();
+                        const val = newLanguageInput.trim();
+                        if (!editLanguages.includes(val)) setEditLanguages(prev => [...prev, val]);
+                        setNewLanguageInput('');
+                      }
+                    }}
+                    placeholder={t('Add language (e.g. Arabic, French)', 'أضف لغة (مثال: العربية، الفرنسية)', 'Ajouter une langue')}
+                    className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const val = newLanguageInput.trim();
+                      if (val && !editLanguages.includes(val)) setEditLanguages(prev => [...prev, val]);
+                      setNewLanguageInput('');
+                    }}
+                    className="px-3 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {editLanguages.map(l => (
+                    <span key={l} className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 text-[11px] font-semibold px-2.5 py-1 rounded-full">
+                      {l}
+                      <button type="button" onClick={() => setEditLanguages(prev => prev.filter(x => x !== l))} className="hover:text-red-500">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Experience & Hourly Price */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Years of Experience', 'سنوات الخبرة', 'Années d\'expérience')}</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={editExperienceYears}
+                    onChange={e => setEditExperienceYears(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-gray-700 block mb-1">{t('Hourly Rate (DZD)', 'السعر بالساعة (دج)', 'Tarif horaire')}</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editHourlyRate}
+                    onChange={e => setEditHourlyRate(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
               </div>
             </div>
 
@@ -1197,14 +1496,14 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
                 onClick={() => setIsEditingProfileModal(false)}
                 className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-semibold text-xs transition-all"
               >
-                {t('Cancel', 'إلغاء')}
+                {t('Cancel', 'إلغاء', 'Annuler')}
               </button>
               <button
                 onClick={handleSaveProfileModal}
-                disabled={isSavingProfile}
+                disabled={isSavingProfile || avatarUploading}
                 className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs shadow-md shadow-blue-200 transition-all disabled:opacity-50"
               >
-                {isSavingProfile ? '...' : t('Save Changes', 'حفظ التغيرات', 'Enregistrer')}
+                {isSavingProfile ? '...' : t('Save Changes', 'حفظ التغييرات', 'Enregistrer')}
               </button>
             </div>
           </div>

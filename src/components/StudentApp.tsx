@@ -1,12 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   BookOpen, Search, Bell, User, ChevronRight, Star, Clock,
   MessageSquare, Calendar, TrendingUp, LogOut, Video,
-  ArrowLeft, Globe, CheckCircle, Send, KeyRound,
+  ArrowLeft, Globe, Check, CheckCheck, CheckCircle, Send, KeyRound,
   Award, Zap, X, Heart, Users, Shield, BookMarked, Mail,
   GraduationCap, Palette, FlaskConical, Music, Briefcase, HeartPulse, Target,
-  Flame, Trophy, Lightbulb, Languages, Moon, Sun, CalendarClock, MessageCircle,
-  PartyPopper, CircleCheck, CreditCard, Wallet, Apple
+  Flame, Trophy, Lightbulb, Languages, Moon, Sun,
+  CircleCheck, CreditCard, Wallet, Apple, UserPlus, UserCheck, BellRing
 } from 'lucide-react';
 import { categories, subjects, tutors, getSubjectsByCategory, getLevelsBySubject, type Category, type Subject, type Level, type Tutor } from '../lib/db';
 import MultiSlotCalendar, { dayToNumber } from './booking/MultiSlotCalendar';
@@ -16,8 +16,16 @@ import CreditBadge from './CreditBadge';
 import CreditHistoryScreen from './CreditHistoryScreen';
 import JoinSessionButton from './JoinSessionButton';
 import LiveMeetingRoom from './LiveMeetingRoom';
+import LiveClassCard from './LiveClassCard';
 import { addSessionsRemote, useBookedSessions, convertDbTimeToFrontend, type BookedSession, type SelectedSlot } from '../lib/bookingsStore';
+import { claimFreeTrialCredits, spendTrialCreditForLiveJoin } from '../lib/credits';
+import { FREE_TRIAL_INITIAL_CREDITS, PAID_PLANS_ENABLED } from '../lib/config';
 import { supabase } from '../lib/supabase';
+import {
+  enableWebPushNotifications,
+  getPushStatus,
+  type PushSupportStatus
+} from '../lib/pushNotifications';
 import {
   getOrCreateConversation,
   fetchMessages,
@@ -33,6 +41,8 @@ interface StudentAppProps {
   language: 'en' | 'ar' | 'fr';
   onChangeLanguage: (lang: 'en' | 'ar' | 'fr') => void;
   onOpenSetPassword?: () => void;
+  initialRoomId?: string | null;
+  onConsumeInitialRoom?: () => void;
 }
 
 type Screen =
@@ -75,13 +85,15 @@ const CATEGORY_ICON_MAP: Record<string, React.ComponentType<{ className?: string
   health: HeartPulse,
 };
 
-export default function StudentApp({ user, onLogout, language, onChangeLanguage, onOpenSetPassword }: StudentAppProps) {
+export default function StudentApp({ user, onLogout, language, onChangeLanguage, onOpenSetPassword, initialRoomId, onConsumeInitialRoom }: StudentAppProps) {
   const [screen, setScreen] = useState<Screen>('home');
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [selectedLevel, setSelectedLevel] = useState<Level | null>(null);
   const [selectedTutor, setSelectedTutor] = useState<Tutor | null>(null);
   const [filterType, setFilterType] = useState<FilterType>('Top Rated');
+  const [specialtyFilter, setSpecialtyFilter] = useState<string>('all');
+  const [joiningLiveTutorId, setJoiningLiveTutorId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [tutorsList, setTutorsList] = useState<Tutor[]>([]);
   const [tutorSchedule, setTutorSchedule] = useState<any[]>([]);
@@ -127,42 +139,105 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     return [];
   };
 
-  const fetchApprovedTutors = () => {
-    supabase
-      .from('tutors')
-      .select('*')
-      .eq('status', 'approved')
-      .then(({ data, error }) => {
-        if (data && !error) {
-          const mapped: Tutor[] = data.map(t => ({
-            id: t.id,
-            user_id: t.user_id,
-            name: t.name,
-            nameAr: t.name_ar || t.name,
-            bio: t.bio || '',
-            bioAr: t.bio_ar || t.bio || '',
-            subjects: parseSubjects(t.subjects),
-            hourlyRate: Number(t.hourly_rate || 2500),
-            rating: Number(t.rating || 5.0),
-            reviewCount: t.review_count || 1,
-            experienceYears: t.experience_years || 5,
-            languages: parseSubjects(t.languages).length > 0 ? parseSubjects(t.languages) : ['Arabic'],
-            avatarUrl: t.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
-            videoUrl: t.video_url || undefined,
-            isOnline: t.is_online ?? true,
-            responseTime: t.response_time || '< 15 mins',
-            isVerified: t.is_verified ?? true,
-            category: t.category || '',
-            levelId: 'elementary-grade-5',
-            schedule: []
-          }));
+  const PUBLIC_TUTOR_FIELDS =
+    'id, user_id, name, name_ar, bio, bio_ar, subjects, hourly_rate, rating, review_count, students_count, experience_years, languages, avatar_url, video_url, is_online, is_live, active_session_url, active_session_subject, live_started_at, is_verified, status, category, created_at';
 
-          const dbIds = new Set(mapped.map(m => m.id));
-          const combined = [...mapped, ...tutors.filter(st => !dbIds.has(st.id))];
-          setTutorsList(combined);
-        }
+  const FALLBACK_TUTOR_FIELDS =
+    'id, user_id, name, name_ar, bio, bio_ar, subjects, hourly_rate, rating, review_count, experience_years, languages, avatar_url, video_url, is_online, is_live, active_session_url, active_session_subject, live_started_at, is_verified, status, category, created_at';
+
+  const fetchApprovedTutors = async () => {
+    let rows: any[] | null = null;
+    const { data: viewData, error: viewErr } = await supabase
+      .from('approved_tutors_public')
+      .select(PUBLIC_TUTOR_FIELDS);
+
+    if (!viewErr && viewData) {
+      rows = viewData;
+    } else {
+      const { data, error } = await supabase
+        .from('tutors')
+        .select(FALLBACK_TUTOR_FIELDS)
+        .eq('status', 'approved');
+      if (!error && data) rows = data;
+    }
+
+    if (rows) {
+      const mapped: Tutor[] = rows.map(t => {
+        const revCount = Number(t.review_count || 0);
+        const realRating = revCount > 0 && t.rating != null ? Number(t.rating) : null;
+        return {
+          id: t.id,
+          user_id: t.user_id,
+          name: t.name,
+          nameAr: t.name_ar || t.name,
+          bio: t.bio || '',
+          bioAr: t.bio_ar || '',
+          subjects: parseSubjects(t.subjects),
+          hourlyRate: t.hourly_rate != null && Number(t.hourly_rate) > 0 ? Number(t.hourly_rate) : 0,
+          rating: realRating,
+          reviewCount: revCount,
+          studentsCount: Number(t.students_count || 0),
+          experienceYears: t.experience_years != null && Number(t.experience_years) > 0 ? Number(t.experience_years) : 0,
+          languages: parseSubjects(t.languages),
+          avatarUrl: t.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.name || 'Tutor')}&background=2563EB&color=fff&size=150`,
+          videoUrl: t.video_url || undefined,
+          isOnline: Boolean(t.is_live && t.active_session_url),
+          isLive: Boolean(t.is_live && t.active_session_url),
+          activeSessionUrl: t.active_session_url || null,
+          activeSessionSubject: t.active_session_subject || null,
+          responseTime: null,
+          isVerified: Boolean(t.is_verified),
+          category: t.category || '',
+          levelId: 'elementary-grade-5',
+          schedule: []
+        };
       });
+
+      const dbIds = new Set(mapped.map(m => m.id));
+      const combined = [...mapped, ...tutors.filter(st => !dbIds.has(st.id))];
+      setTutorsList(combined);
+      setSelectedTutor(prev => (prev ? combined.find(item => item.id === prev.id) || prev : null));
+    }
   };
+
+  const handleJoinLiveTutorSession = async (tutor: Tutor) => {
+    if (!tutor.activeSessionUrl) return;
+    setJoiningLiveTutorId(tutor.id);
+    try {
+      let spendRes = await spendTrialCreditForLiveJoin(tutor.id, 1);
+
+      // In Free Trial mode, auto-top-up starter/refill credits if student has 0 credits
+      if (!spendRes.ok && spendRes.error === 'insufficient_credits' && !PAID_PLANS_ENABLED) {
+        const claim = await claimFreeTrialCredits(FREE_TRIAL_INITIAL_CREDITS);
+        if (claim.ok && claim.balance > 0) {
+          spendRes = await spendTrialCreditForLiveJoin(tutor.id, 1);
+        }
+      }
+
+      if (!spendRes.ok && spendRes.error === 'insufficient_credits') {
+        nav('packages');
+        return;
+      }
+
+      const target = tutor.activeSessionUrl.trim();
+      if (/^https?:\/\//i.test(target)) {
+        window.open(target, '_blank', 'noopener,noreferrer');
+      } else {
+        setLiveRoomId(target);
+        nav('meeting');
+      }
+    } finally {
+      setJoiningLiveTutorId(null);
+    }
+  };
+
+  useEffect(() => {
+    if (initialRoomId) {
+      setLiveRoomId(initialRoomId);
+      setScreen('meeting');
+      onConsumeInitialRoom?.();
+    }
+  }, [initialRoomId]);
 
   useEffect(() => {
     fetchApprovedTutors();
@@ -178,7 +253,11 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
       )
       .subscribe();
 
+    const onFocus = () => fetchApprovedTutors();
+    window.addEventListener('focus', onFocus);
+
     return () => {
+      window.removeEventListener('focus', onFocus);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -189,9 +268,75 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     }
   }, [screen]);
 
+  const [tutorReviews, setTutorReviews] = useState<Array<{
+    id: string;
+    tutor_id: string;
+    student_id: string;
+    rating: number;
+    comment: string | null;
+    created_at: string;
+    reviewer_name: string;
+  }>>([]);
+  const [canReviewSelectedTutor, setCanReviewSelectedTutor] = useState(false);
+  const [profileReviewRating, setProfileReviewRating] = useState(0);
+  const [profileReviewComment, setProfileReviewComment] = useState('');
+  const [submittingProfileReview, setSubmittingProfileReview] = useState(false);
+  const [profileReviewError, setProfileReviewError] = useState<string | null>(null);
+
+  const loadSelectedTutorReviews = async (tutorId: string) => {
+    const [{ data: revData }, { data: eligible }] = await Promise.all([
+      supabase.rpc('get_tutor_reviews', { p_tutor_id: tutorId }),
+      supabase.rpc('can_i_review_tutor', { p_tutor_id: tutorId })
+    ]);
+    const list = Array.isArray(revData) ? revData : [];
+    setTutorReviews(list);
+    setCanReviewSelectedTutor(Boolean(eligible));
+    const myExisting = list.find((r: any) => r.student_id === user.id);
+    if (myExisting) {
+      setProfileReviewRating(myExisting.rating);
+      setProfileReviewComment(myExisting.comment || '');
+    } else {
+      setProfileReviewRating(0);
+      setProfileReviewComment('');
+    }
+    setProfileReviewError(null);
+  };
+
+  const handleSubmitProfileReview = async () => {
+    if (!selectedTutor || !user?.id || profileReviewRating < 1 || profileReviewRating > 5) return;
+    setSubmittingProfileReview(true);
+    setProfileReviewError(null);
+    try {
+      const { error } = await supabase
+        .from('reviews')
+        .upsert(
+          {
+            tutor_id: selectedTutor.id,
+            student_id: user.id,
+            rating: profileReviewRating,
+            comment: profileReviewComment.trim() || null,
+            updated_at: new Date().toISOString()
+          },
+          { onConflict: 'tutor_id,student_id' }
+        );
+      if (error) throw error;
+      await Promise.all([loadSelectedTutorReviews(selectedTutor.id), fetchApprovedTutors()]);
+    } catch (err: any) {
+      setProfileReviewError(err?.message || 'Unable to submit review.');
+    } finally {
+      setSubmittingProfileReview(false);
+    }
+  };
+
   useEffect(() => {
     if (!selectedTutor) return;
-    
+    setTutorSchedule([]);
+    setTutorBookedSessions([]);
+    setTutorReviews([]);
+    setCanReviewSelectedTutor(false);
+
+    loadSelectedTutorReviews(selectedTutor.id);
+
     supabase
       .from('schedules')
       .select('*')
@@ -228,11 +373,43 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           setTutorBookedSessions(mapped);
         }
       });
-  }, [selectedTutor]);
+  }, [selectedTutor?.id]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [realMessages, setRealMessages] = useState<DBMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const [chatViewportHeight, setChatViewportHeight] = useState<number | null>(null);
+
+  // Auto-scroll chat to newest message
+  useEffect(() => {
+    if (screen === 'chat') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [screen, realMessages.length]);
+
+  // Keep chat input visible above virtual keyboard using visualViewport
+  useEffect(() => {
+    if (screen !== 'chat' || typeof window === 'undefined' || !window.visualViewport) {
+      setChatViewportHeight(null);
+      return;
+    }
+    const vv = window.visualViewport;
+    const handleResize = () => {
+      setChatViewportHeight(Math.round(vv.height));
+      setTimeout(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }, 60);
+    };
+    handleResize();
+    vv.addEventListener('resize', handleResize);
+    vv.addEventListener('scroll', handleResize);
+    return () => {
+      vv.removeEventListener('resize', handleResize);
+      vv.removeEventListener('scroll', handleResize);
+      setChatViewportHeight(null);
+    };
+  }, [screen]);
 
   useEffect(() => {
     if (screen !== 'chat' || !selectedTutor || !user?.id) return;
@@ -283,7 +460,168 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   const [activeNav, setActiveNav] = useState<'home' | 'dashboard' | 'schedule' | 'profile'>('home');
   const [activeCategoryCard, setActiveCategoryCard] = useState('');
   const [showNotifications, setShowNotifications] = useState(false);
-  const [readNotifications, setReadNotifications] = useState<number[]>([]);
+  const [notificationsList, setNotificationsList] = useState<Array<{
+    id: string;
+    title: string;
+    title_ar?: string | null;
+    body: string;
+    body_ar?: string | null;
+    kind: string;
+    room_id?: string | null;
+    tutor_id?: string | null;
+    is_read: boolean;
+    created_at: string;
+  }>>([]);
+  const [liveToast, setLiveToast] = useState<{
+    id: string;
+    title: string;
+    body: string;
+    roomId?: string | null;
+    tutorId?: string | null;
+  } | null>(null);
+  const [followedTutorIds, setFollowedTutorIds] = useState<string[]>([]);
+  const [followLoadingId, setFollowLoadingId] = useState<string | null>(null);
+  const [pushStatus, setPushStatus] = useState<PushSupportStatus>('supported');
+  const [pushFeedback, setPushFeedback] = useState<string | null>(null);
+  const [profileBackScreen, setProfileBackScreen] = useState<Screen>('tutors');
+
+  const openTutorProfile = (tutor: Tutor, from: Screen = 'tutors') => {
+    setSelectedTutor(tutor);
+    setProfileBackScreen(from);
+    setScreen('tutor-profile');
+  };
+
+  // Load real notifications, follows, push status, and subscribe to Realtime notifications
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const loadNotifications = async () => {
+      const { data } = await supabase
+        .from('notifications')
+        .select('id, title, title_ar, body, body_ar, kind, room_id, tutor_id, is_read, created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      if (data) setNotificationsList(data);
+    };
+
+    const loadFollows = async () => {
+      const { data } = await supabase
+        .from('student_follows')
+        .select('tutor_id')
+        .eq('student_id', user.id);
+      if (data) {
+        setFollowedTutorIds(data.map((r: any) => r.tutor_id).filter(Boolean));
+      }
+    };
+
+    loadNotifications();
+    loadFollows();
+    getPushStatus().then(setPushStatus).catch(() => setPushStatus('unsupported'));
+
+    const notifChannel = supabase
+      .channel(`student-notifications-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications',
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          const n = payload.new as any;
+          if (!n?.id) return;
+          setNotificationsList(prev => (prev.some(x => x.id === n.id) ? prev : [n, ...prev]));
+          setLiveToast({
+            id: n.id,
+            title: language === 'ar' && n.title_ar ? n.title_ar : n.title,
+            body: language === 'ar' && n.body_ar ? n.body_ar : n.body,
+            roomId: n.room_id || null,
+            tutorId: n.tutor_id || null,
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(notifChannel);
+    };
+  }, [user?.id, language]);
+
+  const unreadNotifCount = notificationsList.filter(n => !n.is_read).length;
+
+  const markNotificationRead = async (notifId: string) => {
+    setNotificationsList(prev => prev.map(n => (n.id === notifId ? { ...n, is_read: true } : n)));
+    await supabase.from('notifications').update({ is_read: true }).eq('id', notifId);
+  };
+
+  const markAllNotificationsRead = async () => {
+    setNotificationsList(prev => prev.map(n => ({ ...n, is_read: true })));
+    await supabase.from('notifications').update({ is_read: true }).eq('user_id', user.id).eq('is_read', false);
+  };
+
+  const handleOpenNotification = async (n: { id: string; room_id?: string | null; tutor_id?: string | null; kind?: string }) => {
+    await markNotificationRead(n.id);
+    setShowNotifications(false);
+    setLiveToast(null);
+    if (n.room_id) {
+      const target = n.room_id.trim();
+      if (/^https?:\/\//i.test(target)) {
+        window.open(target, '_blank', 'noopener,noreferrer');
+      } else {
+        setLiveRoomId(target);
+        nav('meeting');
+      }
+      return;
+    }
+    if (n.tutor_id) {
+      const found = tutorsList.find(tut => tut.id === n.tutor_id);
+      if (found) {
+        if (found.isLive && found.activeSessionUrl) {
+          handleJoinLiveTutorSession(found);
+        } else {
+          openTutorProfile(found, 'home');
+        }
+      }
+    }
+  };
+
+  const toggleFollowTutor = async (tutorId: string) => {
+    if (!user?.id || followLoadingId) return;
+    setFollowLoadingId(tutorId);
+    const isFollowing = followedTutorIds.includes(tutorId);
+    try {
+      if (isFollowing) {
+        await supabase
+          .from('student_follows')
+          .delete()
+          .eq('student_id', user.id)
+          .eq('tutor_id', tutorId);
+        setFollowedTutorIds(prev => prev.filter(id => id !== tutorId));
+      } else {
+        const { error } = await supabase
+          .from('student_follows')
+          .insert({ student_id: user.id, tutor_id: tutorId });
+        if (!error) {
+          setFollowedTutorIds(prev => [...prev, tutorId]);
+        }
+      }
+    } finally {
+      setFollowLoadingId(null);
+    }
+  };
+
+  const handleEnablePush = async () => {
+    setPushFeedback(null);
+    const res = await enableWebPushNotifications(user.id);
+    setPushStatus(res.status);
+    if (res.ok) {
+      setPushFeedback(t('Push notifications enabled!', 'تم تفعيل إشعارات المتصفح بنجاح!', 'Notifications push activées !'));
+    } else if (res.message) {
+      setPushFeedback(res.message);
+    }
+  };
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() =>
     (localStorage.getItem('tm_theme') as 'light' | 'dark') || 'light'
   );
@@ -378,6 +716,21 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     { icon: Lightbulb, label: t('Quick Learner', 'سريع التعلم', 'Apprenant rapide'), earned: completedSessionsCount > 0 },
   ];
 
+  // Normalize teacher registration categories to Student catalog category IDs
+  const normalizeTutorCategoryToId = (rawCategory?: string): string[] => {
+    const c = (rawCategory || '').trim().toLowerCase();
+    if (!c) return [];
+    const ids: string[] = [];
+    if (c.includes('school') || c.includes('المدرسي') || c.includes('elementary') || c.includes('middle') || c.includes('high')) ids.push('school');
+    if (c.includes('university') || c.includes('الجامعي') || c.includes('science') || c.includes('engineering') || c.includes('business') || c.includes('health') || c.includes('medicine') || c.includes('law')) ids.push('university');
+    if (c.includes('digital') || c.includes('creative') || c.includes('arts') || c.includes('music') || c.includes('design') || c.includes('programming')) ids.push('digital');
+    if (c.includes('technology') || c.includes('finance') || c.includes('fintech') || c.includes('accounting') || c.includes('business')) ids.push('technology');
+    if (c.includes('language') || c.includes('لغات')) ids.push('languages');
+    if (c.includes('personal') || c.includes('development') || c.includes('life') || c.includes('health')) ids.push('personal');
+    if (ids.length === 0) ids.push(c);
+    return ids;
+  };
+
   const isSubjectMatch = (tutorSubject: string, targetSubject: Subject): boolean => {
     if (!tutorSubject || !targetSubject) return false;
     const s = tutorSubject.trim().toLowerCase();
@@ -388,7 +741,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     const cleanSubName = subName.replace(/language/gi, '').trim();
     const cleanSubNameAr = subNameAr.replace(/لغة|اللغة/gi, '').replace(/[أإآ]/g, 'ا').trim();
 
-    return (
+    if (
       s === subName ||
       s === subNameAr ||
       s.includes(subName) ||
@@ -396,31 +749,74 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
       (subNameAr !== '' && (s.includes(subNameAr) || subNameAr.includes(s))) ||
       (cleanS.length >= 3 && (cleanSubName.includes(cleanS) || cleanS.includes(cleanSubName))) ||
       (cleanS.length >= 3 && cleanSubNameAr.length >= 3 && (cleanSubNameAr.includes(cleanS) || cleanS.includes(cleanSubNameAr)))
-    );
+    ) {
+      return true;
+    }
+
+    // Also check if tutorSubject matches any level/course under this targetSubject
+    // (e.g. teacher registered with "Mathematics" or "Python" or "Graphic Design" or "Accounting")
+    const subLevels = getLevelsBySubject(targetSubject.id);
+    if (
+      subLevels.some(lvl => {
+        const lName = lvl.name.trim().toLowerCase();
+        const lNameAr = (lvl.nameAr || '').trim().toLowerCase();
+        return (
+          s === lName ||
+          lName.includes(s) ||
+          s.includes(lName) ||
+          (lNameAr !== '' && (s.includes(lNameAr) || lNameAr.includes(s)))
+        );
+      })
+    ) {
+      return true;
+    }
+
+    // School-stage curriculum subjects (Mathematics, Physics, Chemistry, Biology, Arabic, French, English, History, Computer Science)
+    if (targetSubject.categoryId === 'school') {
+      const schoolCore = ['math', 'physics', 'chemistry', 'biology', 'arabic', 'french', 'english', 'history', 'geography', 'computer', 'islamic', 'philosophy', 'calculus', 'algebra', 'geometry'];
+      if (schoolCore.some(k => s.includes(k))) return true;
+    }
+
+    // Technology & Finance subjects (Finance, Accounting, Economics, Mathematics, Business)
+    if (targetSubject.categoryId === 'technology') {
+      const techFinCore = ['finance', 'accounting', 'economics', 'fintech', 'blockchain', 'trading', 'banking'];
+      if (techFinCore.some(k => s.includes(k))) return true;
+    }
+
+    return false;
+  };
+
+  const doesTutorMatchSubject = (tutor: Tutor, targetSubject: Subject): boolean => {
+    const tutorSubjects = parseSubjects(tutor.subjects);
+    if (tutorSubjects.some(ts => isSubjectMatch(ts, targetSubject))) return true;
+    // Also match if the teacher registered directly under this subject's parent category
+    const catIds = normalizeTutorCategoryToId(tutor.category);
+    if (catIds.includes(targetSubject.categoryId)) return true;
+    return false;
   };
 
   const getSubjectTutorCount = (sub: Subject): number => {
-    return tutorsList.filter(t => (t.subjects || []).some(ts => isSubjectMatch(ts, sub))).length;
+    return tutorsList.filter(tut => doesTutorMatchSubject(tut, sub)).length;
   };
 
   const getSubjectMinPrice = (sub: Subject): number => {
-    const matched = tutorsList.filter(t => (t.subjects || []).some(ts => isSubjectMatch(ts, sub)));
+    const matched = tutorsList.filter(tut => doesTutorMatchSubject(tut, sub));
     if (matched.length === 0) return sub.minPrice || 15;
-    return Math.min(...matched.map(t => t.hourlyRate));
+    return Math.min(...matched.map(tut => tut.hourlyRate));
   };
 
   const getLevelTutorCount = (_level: Level): number => {
     if (selectedSubject) {
-      return tutorsList.filter(t => (t.subjects || []).some(ts => isSubjectMatch(ts, selectedSubject))).length;
+      return tutorsList.filter(tut => doesTutorMatchSubject(tut, selectedSubject)).length;
     }
     return 0;
   };
 
   const getLevelPrice = (level: Level): number => {
     if (selectedSubject) {
-      const matched = tutorsList.filter(t => (t.subjects || []).some(ts => isSubjectMatch(ts, selectedSubject)));
+      const matched = tutorsList.filter(tut => doesTutorMatchSubject(tut, selectedSubject));
       if (matched.length > 0) {
-        return Math.min(...matched.map(t => t.hourlyRate));
+        return Math.min(...matched.map(tut => tut.hourlyRate));
       }
     }
     return level.price;
@@ -543,20 +939,47 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
 
   const q = searchQuery.trim().toLowerCase();
 
+  // Dynamic list of specialties/subjects available across approved tutors
+  const availableSpecialties = Array.from(
+    new Set(
+      tutorsList
+        .flatMap(tut => [
+          ...(tut.category ? [tut.category.trim()] : []),
+          ...parseSubjects(tut.subjects).map(s => s.trim())
+        ])
+        .filter(Boolean)
+    )
+  );
+
+  const liveApprovedTutors = tutorsList.filter(tut => tut.isLive && tut.activeSessionUrl);
+
   const filteredTutors = (() => {
     const activeList = tutorsList.length > 0 ? tutorsList : tutors;
-    let list = activeList.filter(t => {
-      const tutorSubjects = parseSubjects(t.subjects);
-      const matchesSubject = !selectedSubject || tutorSubjects.some(s => isSubjectMatch(s, selectedSubject));
+    let list = activeList.filter(tut => {
+      const tutorSubjects = parseSubjects(tut.subjects);
+      const tutorCategory = (tut.category || '').trim().toLowerCase();
+      const matchesSubject = !selectedSubject || doesTutorMatchSubject(tut, selectedSubject);
+      const matchesCategoryOnly =
+        selectedSubject || !selectedCategory
+          ? true
+          : normalizeTutorCategoryToId(tut.category).includes(selectedCategory.id) ||
+            tutorCategory.includes(selectedCategory.name.toLowerCase());
+      const matchesSpecialty =
+        specialtyFilter === 'all' ||
+        (specialtyFilter === 'live' && Boolean(tut.isLive && tut.activeSessionUrl)) ||
+        tutorCategory === specialtyFilter.toLowerCase() ||
+        tutorSubjects.some(s => s.trim().toLowerCase() === specialtyFilter.toLowerCase());
       const matchesQuery = !q ||
-        t.name.toLowerCase().includes(q) ||
-        (t.nameAr && t.nameAr.toLowerCase().includes(q)) ||
+        tut.name.toLowerCase().includes(q) ||
+        (tut.nameAr && tut.nameAr.toLowerCase().includes(q)) ||
+        tutorCategory.includes(q) ||
+        (tut.bio && tut.bio.toLowerCase().includes(q)) ||
         tutorSubjects.some(s => s.toLowerCase().includes(q));
-      return matchesSubject && matchesQuery;
+      return matchesSubject && matchesCategoryOnly && matchesSpecialty && matchesQuery;
     });
     if (filterType === 'Price') list = [...list].sort((a, b) => a.hourlyRate - b.hourlyRate);
     if (filterType === 'Experience') list = [...list].sort((a, b) => b.experienceYears - a.experienceYears);
-    if (filterType === 'Top Rated') list = [...list].sort((a, b) => b.rating - a.rating);
+    if (filterType === 'Top Rated') list = [...list].sort((a, b) => Number(Boolean(b.isLive)) - Number(Boolean(a.isLive)) || (b.rating ?? 0) - (a.rating ?? 0));
     return list;
   })();
 
@@ -624,7 +1047,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   };
 
   if (activeNav === 'dashboard') return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-20">
         <h1 className="font-bold text-gray-900">My Dashboard</h1>
         <p className="text-xs text-gray-400 mt-0.5">Track your learning progress</p>
@@ -683,7 +1106,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   );
 
   if (activeNav === 'schedule') return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-20">
         <h1 className="font-bold text-gray-900">{t('My Schedule', 'جدولي')}</h1>
         <p className="text-xs text-gray-400 mt-0.5">{t('Upcoming and completed sessions', 'الحصص القادمة والمكتملة')}</p>
@@ -708,12 +1131,12 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
 
         <div className="space-y-3">
           <h3 className="font-semibold text-gray-800">{t('Upcoming Sessions', 'الحصص القادمة')}</h3>
-          {bookedSessions.filter(s => s.status === 'confirmed').length === 0 && (
+          {bookedSessions.filter(s => s.status === 'confirmed' || s.status === 'live').length === 0 && (
             <div className="bg-white rounded-2xl p-6 shadow-sm text-center text-sm text-gray-400">
               {t('No upcoming sessions yet. Book a tutor to get started!', 'لا توجد حصص قادمة بعد. احجز مع أستاذ للبدء!')}
             </div>
           )}
-          {bookedSessions.filter(s => s.status === 'confirmed').map((s) => (
+          {bookedSessions.filter(s => s.status === 'confirmed' || s.status === 'live').map((s) => (
             <div key={s.id} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 card-hover hover-blue-card interactive-card">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -722,7 +1145,19 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2 flex-wrap">
                     <p className="font-bold text-gray-800 text-sm truncate">{s.subject}</p>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 flex-shrink-0">{t('confirmed', 'مؤكدة')}</span>
+                    <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-0.5 rounded-full flex-shrink-0 ${
+                      s.status === 'live'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
+                        : 'bg-green-100 text-green-700'
+                    }`}>
+                      {s.status === 'live' && (
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                        </span>
+                      )}
+                      {s.status === 'live' ? t('LIVE NOW', 'مباشر الآن', 'En direct') : t('confirmed', 'مؤكدة', 'confirmé')}
+                    </span>
                   </div>
                   <p className="text-xs text-gray-500 mt-0.5 truncate">{s.tutorName}</p>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-blue-600 font-medium mt-1.5">
@@ -861,7 +1296,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   );
 
   if (activeNav === 'profile') return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100 text-left">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden text-left">
       <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-20">
         <h1 className="font-bold text-gray-900 text-lg">{t('My Profile', 'ملفي الشخصي', 'Mon profil')}</h1>
         <p className="text-xs text-gray-400 mt-0.5">{t('Manage your account', 'إدارة حسابك', 'Gérer votre compte')}</p>
@@ -1119,10 +1554,12 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     <CreditHistoryScreen language={language} onBack={() => nav('packages')} />
   );
 
-  const upcomingSession = bookedSessions.find(s => s.status === 'confirmed');
+  const upcomingSession =
+    bookedSessions.find(s => s.status === 'live') ||
+    bookedSessions.find(s => s.status === 'confirmed');
 
   if (screen === 'home' && activeNav === 'home') return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       {upcomingSession && (
         <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2.5 shadow-md flex items-center justify-between gap-3 sticky top-0 z-30">
           <div className="flex items-center gap-2 min-w-0">
@@ -1173,13 +1610,18 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             >
               {themeMode === 'light' ? <Moon className="w-4 h-4 text-gray-600" /> : <Sun className="w-4 h-4 text-amber-500" />}
             </button>
-            <CreditBadge onClick={() => nav('packages')} />
+            <CreditBadge onClick={() => nav('packages')} language={language} />
             <button
               onClick={() => setShowNotifications(true)}
               className="relative p-2 hover:bg-gray-100 rounded-xl transition-colors"
+              aria-label="Notifications"
             >
               <Bell className="w-5 h-5 text-gray-600" />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-blue-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
+                  {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                </span>
+              )}
             </button>
             <button
               onClick={() => switchTab('profile')}
@@ -1255,7 +1697,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             })}
 
             {filteredTutors.slice(0, 4).map(tut => (
-              <button key={tut.id} onClick={() => { setSelectedTutor(tut); setSearchQuery(''); nav('tutor-profile'); }}
+              <button key={tut.id} onClick={() => { setSearchQuery(''); openTutorProfile(tut, 'home'); }}
                 className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors border-b border-gray-50 last:border-0 text-left"
               >
                 <img src={tut.avatarUrl} alt={tut.name} className="w-9 h-9 rounded-xl object-cover" onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${tut.name}&background=3B82F6&color=fff`; }} />
@@ -1264,8 +1706,12 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                   <p className="text-xs text-gray-400">{tut.subjects.slice(0, 2).join(', ')}</p>
                 </div>
                 <div className="ml-auto text-right">
-                  <p className="text-sm font-bold text-blue-600">{formatCurrency(tut.hourlyRate)}/{t('hr', 'ساعة')}</p>
-                  <p className="text-xs text-yellow-500">{tut.rating} / 5</p>
+                  {tut.hourlyRate > 0 && (
+                    <p className="text-sm font-bold text-blue-600">{formatCurrency(tut.hourlyRate)}/{t('hr', 'ساعة')}</p>
+                  )}
+                  {tut.reviewCount > 0 && tut.rating != null && (
+                    <p className="text-xs text-yellow-500">{tut.rating} / 5</p>
+                  )}
                 </div>
               </button>
 
@@ -1294,9 +1740,16 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           </div>
           <div className="grid grid-cols-3 gap-3">
             {[
-              { label: t('Expert Tutors', 'مدرسين خبراء', 'Tuteurs experts'), value: tutorsList.length > 0 ? `${tutorsList.length}+` : '0' },
+              { label: t('Expert Tutors', 'مدرسين خبراء', 'Tuteurs experts'), value: tutorsList.length > 0 ? `${tutorsList.length}` : '0' },
               { label: t('Subjects', 'المواد', 'Matières'), value: `${subjects.length}+` },
-              { label: t('Avg Rating', 'متوسط التقييم', 'Note moy.'), value: tutorsList.length > 0 ? (tutorsList.reduce((acc, curr) => acc + curr.rating, 0) / tutorsList.length).toFixed(1) : '5.0' },
+              {
+                label: t('Avg Rating', 'متوسط التقييم', 'Note moy.'),
+                value: (() => {
+                  const rated = tutorsList.filter(x => x.reviewCount > 0 && x.rating != null);
+                  if (rated.length === 0) return '—';
+                  return (rated.reduce((acc, curr) => acc + (curr.rating || 0), 0) / rated.length).toFixed(1);
+                })()
+              },
             ].map(({ label, value }) => (
 
               <div key={label} className="bg-white/15 rounded-2xl p-3 text-center backdrop-blur-sm">
@@ -1321,6 +1774,56 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             </button>
           ))}
         </div>
+        {/* In-app Realtime Live-Class Toast */}
+        {liveToast && (
+          <div className="mx-4 mt-3 bg-white border border-blue-200 rounded-2xl p-3.5 shadow-md flex items-center justify-between gap-3 animate-slide-down">
+            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+              <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
+                <BellRing className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-slate-900 truncate">{liveToast.title}</p>
+                <p className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">{liveToast.body}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {liveToast.roomId && (
+                <button
+                  onClick={() => handleOpenNotification({ id: liveToast.id, room_id: liveToast.roomId, tutor_id: liveToast.tutorId })}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all"
+                >
+                  {t('Join', 'انضمام', 'Rejoindre')}
+                </button>
+              )}
+              <button
+                onClick={() => setLiveToast(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
+                aria-label="Dismiss notification"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Active Live Classes (refined white cards with green pulsing dot & primary blue Join button) */}
+        {liveApprovedTutors.length > 0 && (
+          <div className="mx-4 mt-3 space-y-2.5">
+            {liveApprovedTutors.map(liveTutor => (
+              <LiveClassCard
+                key={`live-banner-${liveTutor.id}`}
+                tutorName={liveTutor.name}
+                avatarUrl={liveTutor.avatarUrl}
+                subject={liveTutor.activeSessionSubject || liveTutor.subjects[0] || liveTutor.category || t('Live Class', 'حصة مباشرة', 'Cours en direct')}
+                joining={joiningLiveTutorId === liveTutor.id}
+                onJoin={() => handleJoinLiveTutorSession(liveTutor)}
+                onOpenProfile={() => openTutorProfile(liveTutor, 'home')}
+                language={language}
+              />
+            ))}
+          </div>
+        )}
+
         <div className="mt-5 px-4 animate-slide-up delay-200">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-bold text-gray-900 text-lg">{t('Choose Your Subject', 'اختر تخصصك', 'Choisissez votre matière')}</h3>
@@ -1374,7 +1877,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               tutorsList.slice(0, 4).map((tutor, i) => (
                 <button
                   key={tutor.id}
-                  onClick={() => { setSelectedTutor(tutor); nav('tutor-profile'); }}
+                  onClick={() => openTutorProfile(tutor, 'home')}
                   className="w-full bg-white rounded-2xl p-4 flex items-center gap-3 card-hover animate-slide-up text-left border border-gray-100 shadow-sm hover:border-blue-200 hover:shadow-md transition-all touch-press"
                   style={{ animationDelay: `${i * 80}ms` }}
                 >
@@ -1385,7 +1888,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                       className="w-14 h-14 rounded-2xl object-cover border-2 border-gray-100"
                       onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${tutor.name}&background=3B82F6&color=fff&size=150`; }}
                     />
-                    {tutor.isOnline && (
+                    {tutor.isLive && (
                       <span className="absolute bottom-0.5 right-0.5 w-3.5 h-3.5 bg-green-400 border-2 border-white rounded-full" />
                     )}
                     {tutor.isVerified && (
@@ -1400,28 +1903,49 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                         <p className="font-bold text-gray-900 text-sm">{tutor.name}</p>
                         <p className="text-gray-400 text-xs font-cairo mt-0.5">{tutor.nameAr}</p>
                       </div>
-                      <div className="text-right flex-shrink-0">
-                        <p className="font-bold text-blue-600">{formatCurrency(tutor.hourlyRate)}</p>
-                        <p className="text-gray-400 text-[10px]">{t('per hour', 'في الساعة', 'par heure')}</p>
-                      </div>
-
+                      {tutor.hourlyRate > 0 && (
+                        <div className="text-right flex-shrink-0">
+                          <p className="font-bold text-blue-600">{formatCurrency(tutor.hourlyRate)}</p>
+                          <p className="text-gray-400 text-[10px]">{t('per hour', 'في الساعة', 'par heure')}</p>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 mt-1.5">
-                      <div className="flex items-center gap-0.5">
-                        {Array.from({ length: 5 }).map((_, j) => (
-                          <Star key={j} className={`w-3 h-3 ${j < Math.floor(tutor.rating) ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200 fill-gray-200'}`} />
-                        ))}
-                      </div>
-                      <span className="text-xs font-bold text-gray-700">{tutor.rating}</span>
-                      <span className="text-xs text-gray-400">({tutor.reviewCount})</span>
+                      {tutor.reviewCount > 0 && tutor.rating != null ? (
+                        <>
+                          <div className="flex items-center gap-0.5">
+                            {Array.from({ length: 5 }).map((_, j) => (
+                              <Star key={j} className={`w-3 h-3 ${j < Math.floor(tutor.rating || 0) ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200 fill-gray-200'}`} />
+                            ))}
+                          </div>
+                          <span className="text-xs font-bold text-gray-700">{tutor.rating}</span>
+                          <span className="text-xs text-gray-400">({tutor.reviewCount})</span>
+                        </>
+                      ) : (
+                        <span className="text-xs text-gray-400">{t('No reviews yet', 'لا توجد تقييمات بعد', 'Aucun avis')}</span>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 mt-2 flex-wrap">
+                      {tutor.isLive && tutor.activeSessionUrl && (
+                        <span
+                          onClick={e => { e.stopPropagation(); handleJoinLiveTutorSession(tutor); }}
+                          className="inline-flex items-center gap-1.5 text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg shadow-sm cursor-pointer hover:bg-emerald-100 transition-colors"
+                        >
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                          </span>
+                          <Video className="w-3 h-3" /> {t('LIVE · Join Now', 'مباشر · انضم الآن', 'En direct · Rejoindre')}
+                        </span>
+                      )}
                       {tutor.languages.map(l => (
                         <span key={l} className="text-[10px] bg-blue-50 text-blue-600 border border-blue-100 px-2 py-0.5 rounded-lg font-semibold">{l}</span>
                       ))}
-                      <span className="ml-auto text-[10px] text-gray-500 flex items-center gap-0.5">
-                        <Award className="w-3 h-3" /> {t(`${tutor.experienceYears}+ yrs`, `${tutor.experienceYears}+ سنوات`, `${tutor.experienceYears}+ ans`)}
-                      </span>
+                      {tutor.experienceYears > 0 && (
+                        <span className="ml-auto text-[10px] text-gray-500 flex items-center gap-0.5">
+                          <Award className="w-3 h-3" /> {t(`${tutor.experienceYears} yrs`, `${tutor.experienceYears} سنوات`, `${tutor.experienceYears} ans`)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </button>
@@ -1433,14 +1957,18 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
 
       <BottomNav active={activeNav} onChange={switchTab} language={language} onLogout={onLogout} isDark={themeMode === 'dark'} />
       {showNotifications && (
-        <div className="fixed inset-0 z-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100" style={{left:'50%', transform:'translateX(-50%)', right:'auto', width:'100%'}}>
+        <div className="fixed inset-0 z-50 flex justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowNotifications(false)} />
-          <div className="relative bg-white rounded-b-3xl shadow-2xl overflow-hidden animate-slide-down">
-            <div className="bg-blue-600 px-5 pt-12 pb-5">
+          <div className="relative w-full tm-app-shell bg-white rounded-b-3xl shadow-2xl overflow-hidden animate-slide-down self-start max-h-[90dvh] flex flex-col">
+            <div className="bg-blue-600 px-5 pt-10 pb-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="font-bold text-white text-lg">Notifications</h2>
-                  <p className="text-blue-100 text-xs mt-0.5">3 new alerts</p>
+                  <h2 className="font-bold text-white text-lg">{t('Notifications', 'الإشعارات', 'Notifications')}</h2>
+                  <p className="text-blue-100 text-xs mt-0.5">
+                    {unreadNotifCount > 0
+                      ? t(`${unreadNotifCount} unread alerts`, `${unreadNotifCount} إشعارات غير مقروءة`, `${unreadNotifCount} alertes non lues`)
+                      : t('All caught up', 'لا توجد إشعارات جديدة', 'Tout est à jour')}
+                  </p>
                 </div>
                 <button
                   onClick={() => setShowNotifications(false)}
@@ -1449,99 +1977,95 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                   <X className="w-5 h-5 text-white" />
                 </button>
               </div>
+              <div className="mt-3 flex items-center justify-between gap-2 bg-white/10 rounded-xl px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <BellRing className="w-4 h-4 text-blue-100 flex-shrink-0" />
+                  <p className="text-[11px] text-blue-50 truncate">
+                    {pushStatus === 'subscribed'
+                      ? t('Browser push notifications active', 'إشعارات المتصفح مفعّلة', 'Notifications push actives')
+                      : pushStatus === 'unsupported'
+                      ? t('In-app live alerts active on this device', 'التنبيهات المباشرة داخل التطبيق مفعّلة', 'Alertes en direct actives dans l\'app')
+                      : t('Get notified when teachers go live', 'استقبل تنبيهاً عند بدء الحصة المباشرة', 'Recevez une alerte quand un cours démarre')}
+                  </p>
+                </div>
+                {pushStatus !== 'subscribed' && pushStatus !== 'unsupported' && (
+                  <button
+                    onClick={handleEnablePush}
+                    className="px-2.5 py-1 bg-white text-blue-600 hover:bg-blue-50 rounded-lg text-[11px] font-bold flex-shrink-0 transition-colors"
+                  >
+                    {t('Enable', 'تفعيل', 'Activer')}
+                  </button>
+                )}
+              </div>
+              {pushFeedback && (
+                <p className="text-[11px] text-blue-100 mt-2">{pushFeedback}</p>
+              )}
             </div>
-            <div className="divide-y divide-gray-50 max-h-[70vh] overflow-y-auto">
-              {[
-                {
-                  id: 1,
-                  icon: CalendarClock,
-                  iconBg: 'bg-blue-50',
-                  title: 'Session Reminder',
-                  body: 'Your session with Dr. Sarah Johnson starts in 1 hour — Basic Math at 10:00 AM.',
-                  time: '45 min ago',
-                  isNew: true,
-                },
-                {
-                  id: 2,
-                  icon: Star,
-                  iconBg: 'bg-yellow-50',
-                  title: 'Review Request',
-                  body: 'How was your session with Prof. Michael Chen? Leave a review to help others.',
-                  time: '2 hours ago',
-                  isNew: true,
-                },
-                {
-                  id: 3,
-                  icon: MessageCircle,
-                  iconBg: 'bg-green-50',
-                  title: 'New Message',
-                  body: 'Ahmed Al-Rashid sent you a message: "I uploaded the practice exercises for tomorrow."',
-                  time: '3 hours ago',
-                  isNew: true,
-                },
-                {
-                  id: 4,
-                  icon: PartyPopper,
-                  iconBg: 'bg-purple-50',
-                  title: 'Achievement Unlocked!',
-                  body: 'You earned the "Week Streak" badge for attending 7 sessions in a row!',
-                  time: 'Yesterday',
-                  isNew: false,
-                },
-                {
-                  id: 5,
-                  icon: Lightbulb,
-                  iconBg: 'bg-orange-50',
-                  title: 'New Tutor Available',
-                  body: 'Dr. Layla Hassan just opened new slots for IELTS Prep this weekend.',
-                  time: 'Yesterday',
-                  isNew: false,
-                },
-                {
-                  id: 6,
-                  icon: CircleCheck,
-                  iconBg: 'bg-teal-50',
-                  title: 'Booking Confirmed',
-                  body: 'Your booking with Prof. Michael Chen on Jan 17 at 3:00 PM is confirmed.',
-                  time: '2 days ago',
-                  isNew: false,
-                },
-              ].map(n => {
-                const Icon = n.icon;
-                return (
+            <div className="divide-y divide-gray-100 max-h-[65vh] overflow-y-auto">
+              {notificationsList.length === 0 ? (
+                <div className="px-6 py-10 text-center space-y-2">
+                  <Bell className="w-8 h-8 text-slate-300 mx-auto" />
+                  <p className="text-sm font-semibold text-slate-700">
+                    {t('No notifications yet', 'لا توجد إشعارات بعد', 'Aucune notification')}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    {t('Follow teachers to be notified instantly when they start a live class.', 'تابع الأساتذة لتصلك إشعارات فورية فور بدئهم حصة مباشرة.', 'Suivez des enseignants pour être alerté dès le début d\'un cours en direct.')}
+                  </p>
+                </div>
+              ) : (
+                notificationsList.map(n => {
+                  const isLiveNotif = n.kind === 'live_class';
+                  const displayTitle = language === 'ar' && n.title_ar ? n.title_ar : n.title;
+                  const displayBody = language === 'ar' && n.body_ar ? n.body_ar : n.body;
+                  return (
+                    <button
+                      key={n.id}
+                      onClick={() => handleOpenNotification(n)}
+                      className={`w-full flex items-start gap-3 px-4 py-4 text-left hover:bg-slate-50 transition-colors ${
+                        !n.is_read ? 'bg-blue-50/40' : ''
+                      }`}
+                    >
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                        isLiveNotif ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'
+                      }`}>
+                        {isLiveNotif ? <Video className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className={`text-sm font-bold leading-snug ${!n.is_read ? 'text-slate-900' : 'text-slate-700'}`}>
+                            {displayTitle}
+                          </p>
+                          {!n.is_read && (
+                            <span className="w-2.5 h-2.5 bg-blue-600 rounded-full flex-shrink-0 mt-1" />
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{displayBody}</p>
+                        <div className="flex items-center justify-between mt-2">
+                          <span className="text-[10px] text-slate-400 font-medium">
+                            {new Date(n.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          {isLiveNotif && n.room_id && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600">
+                              <Video className="w-3 h-3" /> {t('Join Class', 'انضمام للحصة', 'Rejoindre')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            {notificationsList.length > 0 && (
+              <div className="px-4 py-3 border-t border-gray-100 bg-gray-50">
                 <button
-                  key={n.id}
-                  onClick={() => setReadNotifications(r => r.includes(n.id) ? r : [...r, n.id])}
-                  className={`w-full flex items-start gap-3 px-4 py-4 text-left hover:bg-gray-50 transition-colors ${
-                    n.isNew && !readNotifications.includes(n.id) ? 'bg-blue-50/50' : ''
-                  }`}
+                  onClick={markAllNotificationsRead}
+                  className="w-full text-center text-sm font-semibold text-blue-600 hover:text-blue-700 py-1"
                 >
-                  <div className={`w-11 h-11 ${n.iconBg} rounded-2xl flex items-center justify-center flex-shrink-0`}>
-                    <Icon className="w-5 h-5 text-blue-600" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className={`text-sm font-bold leading-snug ${n.isNew && !readNotifications.includes(n.id) ? 'text-gray-900' : 'text-gray-700'}`}>
-                        {n.title}
-                      </p>
-                      {n.isNew && !readNotifications.includes(n.id) && (
-                        <span className="w-2.5 h-2.5 bg-blue-500 rounded-full flex-shrink-0 mt-1" />
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{n.body}</p>
-                    <p className="text-[10px] text-gray-400 mt-1.5 font-medium">{n.time}</p>
-                  </div>
+                  {t('Mark all as read', 'تحديد الكل كمقروء', 'Tout marquer comme lu')}
                 </button>
-              );})}
-            </div>
-            <div className="px-4 py-3 border-t border-gray-100 bg-gray-50">
-              <button
-                onClick={() => { setReadNotifications([1,2,3,4,5,6]); }}
-                className="w-full text-center text-sm font-semibold text-blue-600 hover:text-blue-700 py-1"
-              >
-                Mark all as read
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1549,7 +2073,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   );
 
   if (screen === 'categories') return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       <div className="bg-white border-b border-gray-100 px-5 py-5 sticky top-0 z-20 flex items-center gap-3">
         <button onClick={() => nav('home')} className="p-2.5 hover:bg-gray-100 rounded-xl transition-colors">
           <ArrowLeft className="w-5 h-5 text-gray-600" />
@@ -1588,7 +2112,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   );
 
   if (screen === 'subjects' && selectedCategory) return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       <div className="bg-white border-b border-gray-100 px-5 py-5 sticky top-0 z-20 flex items-center gap-3">
         <button onClick={() => nav('home')} className="p-2.5 hover:bg-gray-100 rounded-xl transition-colors">
           <ArrowLeft className="w-5 h-5 text-gray-600" />
@@ -1651,7 +2175,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   if (screen === 'levels' && selectedSubject) {
     const coursesForSubject = getSubjectLevels(selectedSubject);
     return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       <div className="bg-white border-b border-gray-100 px-5 py-5 sticky top-0 z-20 flex items-center gap-3">
         <button onClick={() => nav('subjects')} className="p-2.5 hover:bg-gray-100 rounded-xl transition-colors">
           <ArrowLeft className="w-5 h-5 text-gray-600" />
@@ -1721,7 +2245,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   );}
 
   if (screen === 'tutors') return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-20">
         <div className="flex items-center gap-3 mb-3">
           <button onClick={() => nav(selectedLevel ? 'levels' : 'home')} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
@@ -1745,6 +2269,45 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             </button>
           ))}
         </div>
+
+        {/* Specialty & Live Filter Chips */}
+        <div className="flex gap-1.5 mt-2.5 overflow-x-auto pb-1">
+          <button
+            onClick={() => setSpecialtyFilter('all')}
+            className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-all ${
+              specialtyFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {t('All Specialties', 'كل التخصصات')}
+          </button>
+          {liveApprovedTutors.length > 0 && (
+            <button
+              onClick={() => setSpecialtyFilter('live')}
+              className={`px-3 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-all inline-flex items-center gap-1.5 ${
+                specialtyFilter === 'live'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200/80 hover:bg-emerald-100'
+              }`}
+            >
+              <span className="relative flex h-2 w-2">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${specialtyFilter === 'live' ? 'bg-emerald-200' : 'bg-emerald-400'}`} />
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${specialtyFilter === 'live' ? 'bg-white' : 'bg-emerald-500'}`} />
+              </span>
+              {t('Live Now', 'مباشر الآن', 'En direct')} ({liveApprovedTutors.length})
+            </button>
+          )}
+          {availableSpecialties.map(spec => (
+            <button
+              key={spec}
+              onClick={() => setSpecialtyFilter(spec)}
+              className={`px-3 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap transition-all ${
+                specialtyFilter === spec ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+              }`}
+            >
+              {spec}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto pb-4 p-3 space-y-3">
@@ -1762,7 +2325,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           filteredTutors.map((tutor, i) => (
           <button
             key={tutor.id}
-            onClick={() => { setSelectedTutor(tutor); nav('tutor-profile'); }}
+            onClick={() => openTutorProfile(tutor, 'tutors')}
             className="w-full bg-white rounded-2xl p-4 shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md touch-press text-left animate-slide-up"
             style={{ animationDelay: `${i * 60}ms` }}
           >
@@ -1774,7 +2337,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                   className="w-16 h-16 rounded-2xl object-cover border-2 border-gray-100"
                   onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${tutor.name}&background=3B82F6&color=fff&size=150`; }}
                 />
-                {tutor.isOnline && (
+                {tutor.isLive && (
                   <span className="absolute bottom-0.5 right-0.5 w-3.5 h-3.5 bg-green-400 border-2 border-white rounded-full" />
                 )}
                 {tutor.isVerified && (
@@ -1789,32 +2352,39 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                     <p className="font-bold text-gray-900 text-sm leading-tight truncate">{tutor.name}</p>
                     <p className="text-gray-400 text-xs font-cairo mt-0.5 truncate">{tutor.nameAr}</p>
                   </div>
-                  <div className="text-start sm:text-end flex-shrink-0">
-                    <p className="font-bold text-blue-600 text-base whitespace-nowrap-safe">{formatCurrency(tutor.hourlyRate)}</p>
-                    <p className="text-gray-400 text-[10px] whitespace-nowrap-safe">{t('per hour', 'في الساعة')}</p>
-                  </div>
+                  {tutor.hourlyRate > 0 && (
+                    <div className="text-start sm:text-end flex-shrink-0">
+                      <p className="font-bold text-blue-600 text-base whitespace-nowrap-safe">{formatCurrency(tutor.hourlyRate)}</p>
+                      <p className="text-gray-400 text-[10px] whitespace-nowrap-safe">{t('per hour', 'في الساعة')}</p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1.5 mt-2">
-                  <div className="flex items-center gap-0.5">
-                    {Array.from({ length: 5 }).map((_, j) => (
-                      <Star
-                        key={j}
-                        className={`w-3.5 h-3.5 ${j < Math.floor(tutor.rating) ? 'fill-yellow-400 text-yellow-400' : j < tutor.rating ? 'fill-yellow-200 text-yellow-300' : 'text-gray-200 fill-gray-200'}`}
-                      />
-                    ))}
+                  {tutor.reviewCount > 0 && tutor.rating != null ? (
+                    <>
+                      <div className="flex items-center gap-0.5">
+                        {Array.from({ length: 5 }).map((_, j) => (
+                          <Star
+                            key={j}
+                            className={`w-3.5 h-3.5 ${j < Math.floor(tutor.rating || 0) ? 'fill-yellow-400 text-yellow-400' : j < (tutor.rating || 0) ? 'fill-yellow-200 text-yellow-300' : 'text-gray-200 fill-gray-200'}`}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-xs font-bold text-gray-700">{tutor.rating}</span>
+                      <span className="text-xs text-gray-400">({tutor.reviewCount})</span>
+                    </>
+                  ) : (
+                    <span className="text-xs text-gray-400">{t('No reviews yet', 'لا توجد تقييمات بعد', 'Aucun avis')}</span>
+                  )}
+                </div>
+                {tutor.experienceYears > 0 && (
+                  <div className="flex items-center gap-3 mt-1.5">
+                    <span className="flex items-center gap-1 text-gray-400 text-xs">
+                      <Award className="w-3 h-3" /> {t(`${tutor.experienceYears} yrs`, `${tutor.experienceYears} سنوات`, `${tutor.experienceYears} ans`)}
+                    </span>
                   </div>
-                  <span className="text-xs font-bold text-gray-700">{tutor.rating}</span>
-                  <span className="text-xs text-gray-400">({tutor.reviewCount} reviews)</span>
-                </div>
-                <div className="flex items-center gap-3 mt-1.5">
-                  <span className="flex items-center gap-1 text-gray-400 text-xs">
-                    <Clock className="w-3 h-3" /> {tutor.responseTime}
-                  </span>
-                  <span className="flex items-center gap-1 text-gray-400 text-xs">
-                    <Award className="w-3 h-3" /> {tutor.experienceYears}+ yrs
-                  </span>
-                </div>
+                )}
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                   {tutor.languages.map(l => (
                     <span key={l} className="text-[10px] bg-blue-50 text-blue-600 border border-blue-100 px-2 py-0.5 rounded-lg font-semibold">{l}</span>
@@ -1843,10 +2413,65 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               {tutor.subjects.length > 3 && (
                 <span className="text-[10px] text-gray-400 font-medium">+{tutor.subjects.length - 3} more</span>
               )}
-              <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${tutor.isOnline ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
-                {tutor.isOnline ? '● Online' : '○ Offline'}
+              <span className={`ml-auto inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-0.5 rounded-full ${
+                tutor.isLive
+                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80 font-bold'
+                  : tutor.isOnline
+                  ? 'bg-emerald-50 text-emerald-600'
+                  : 'bg-gray-100 text-gray-400'
+              }`}>
+                {tutor.isLive ? (
+                  <>
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                    </span>
+                    {t('LIVE NOW', 'مباشر الآن', 'En direct')}
+                  </>
+                ) : tutor.isOnline ? (
+                  <>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    {t('Online', 'متصل', 'En ligne')}
+                  </>
+                ) : (
+                  <>
+                    <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+                    {t('Offline', 'غير متصل', 'Hors ligne')}
+                  </>
+                )}
               </span>
             </div>
+            {tutor.isLive && tutor.activeSessionUrl && (
+              <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </span>
+                  {tutor.activeSessionSubject || tutor.subjects[0] || t('Live class now', 'حصة مباشرة الآن', 'Cours en direct')}
+                </span>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={e => {
+                    e.stopPropagation();
+                    handleJoinLiveTutorSession(tutor);
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.stopPropagation();
+                      handleJoinLiveTutorSession(tutor);
+                    }
+                  }}
+                  className="py-2 px-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm shadow-blue-200 transition-all"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  {joiningLiveTutorId === tutor.id
+                    ? t('Joining...', 'جاري الانضمام...', 'Connexion...')
+                    : t('Join', 'انضمام', 'Rejoindre')}
+                </div>
+              </div>
+            )}
           </button>
         ))
         )}
@@ -1854,162 +2479,276 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     </div>
   );
 
-  if (screen === 'tutor-profile' && selectedTutor) return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
-      <div className="bg-gray-900 px-4 pt-4 pb-6">
-        <div className="flex items-center justify-between mb-4">
-          <button onClick={() => nav('tutors')} className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-colors">
-            <ArrowLeft className="w-5 h-5 text-white" />
-          </button>
-          <div className="flex gap-2">
-            <button onClick={() => toggleFav(selectedTutor.id)} className={`p-2 rounded-xl transition-colors ${favorites.includes(selectedTutor.id) ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'}`}>
-              <Heart className={`w-5 h-5 ${favorites.includes(selectedTutor.id) ? 'text-white fill-white' : 'text-white'}`} />
+  if (screen === 'tutor-profile' && selectedTutor) {
+    const isFollowingTutor = followedTutorIds.includes(selectedTutor.id);
+    return (
+    <div className="h-[100dvh] w-full tm-app-shell bg-white flex flex-col overflow-hidden">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="bg-gray-900 px-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-7 w-full">
+          <div className="flex items-center justify-between mb-4">
+            <button onClick={() => nav(profileBackScreen)} className="w-10 h-10 bg-white/10 hover:bg-white/20 rounded-xl transition-colors flex items-center justify-center">
+              <ArrowLeft className="w-5 h-5 text-white" />
             </button>
-          </div>
-        </div>
-        <div className="flex items-start gap-4">
-          <div className="relative">
-            <img src={selectedTutor.avatarUrl} alt={selectedTutor.name} className="w-20 h-20 rounded-2xl object-cover border-2 border-white/20"
-              onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${selectedTutor.name}&background=3B82F6&color=fff&size=200`; }} />
-            {selectedTutor.isOnline && <span className="absolute bottom-1 right-1 w-4 h-4 bg-green-400 border-2 border-gray-900 rounded-full" />}
-          </div>
-          <div className="flex-1">
-            <h2 className="font-bold text-white text-xl">{selectedTutor.name}</h2>
-            <p className="text-gray-300 text-sm font-cairo">{selectedTutor.nameAr}</p>
-            {selectedTutor.isVerified && (
-              <div className="flex items-center gap-1 mt-1">
-                <CheckCircle className="w-3.5 h-3.5 text-blue-400" />
-                <span className="text-blue-400 text-xs font-semibold">Verified Tutor</span>
-              </div>
-            )}
-            <div className="flex items-center gap-3 mt-2">
-              <span className="flex items-center gap-1 text-yellow-400 text-sm font-bold">
-                <Star className="w-4 h-4 fill-yellow-400" /> {selectedTutor.rating} ({selectedTutor.reviewCount})
-              </span>
-              <span className="text-gray-400 text-xs">• {selectedTutor.experienceYears}+ yrs exp</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => toggleFollowTutor(selectedTutor.id)}
+                disabled={followLoadingId === selectedTutor.id}
+                className={`h-10 px-3 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 ${
+                  isFollowingTutor
+                    ? 'bg-blue-600 text-white hover:bg-blue-700'
+                    : 'bg-white/15 text-white hover:bg-white/25'
+                }`}
+              >
+                {isFollowingTutor ? <UserCheck className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+                <span>{isFollowingTutor ? t('Following', 'متابَع', 'Suivi') : t('Follow', 'متابعة', 'Suivre')}</span>
+              </button>
+              <button onClick={() => toggleFav(selectedTutor.id)} className={`w-10 h-10 rounded-xl transition-colors flex items-center justify-center ${favorites.includes(selectedTutor.id) ? 'bg-red-500' : 'bg-white/10 hover:bg-white/20'}`}>
+                <Heart className={`w-5 h-5 ${favorites.includes(selectedTutor.id) ? 'text-white fill-white' : 'text-white'}`} />
+              </button>
             </div>
           </div>
-          <div className="text-right">
-            <p className="font-bold text-white text-2xl">{formatCurrency(selectedTutor.hourlyRate)}</p>
-            <p className="text-gray-400 text-xs">{t('per hour', 'في الساعة')}</p>
-          </div>
-
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto pb-28 -mt-3">
-        <div className="bg-white rounded-t-3xl p-4 space-y-4">
-          <div className="grid grid-cols-3 gap-3">
-            {[
-              { label: 'Students', value: `${selectedTutor.reviewCount}+`, icon: Users },
-              { label: 'Response', value: selectedTutor.responseTime, icon: Clock },
-              { label: 'Experience', value: `${selectedTutor.experienceYears} yrs`, icon: Award },
-            ].map(({ label, value, icon: Icon }) => (
-              <div key={label} className="bg-gray-50 rounded-2xl p-3 text-center">
-                <Icon className="w-4 h-4 text-blue-500 mx-auto mb-1" />
-                <p className="font-bold text-gray-800 text-sm">{value}</p>
-                <p className="text-[10px] text-gray-400">{label}</p>
+          <div className="flex items-start gap-3">
+            <div className="relative flex-shrink-0">
+              <img src={selectedTutor.avatarUrl} alt={selectedTutor.name} className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border-2 border-white/20"
+                onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${selectedTutor.name}&background=3B82F6&color=fff&size=200`; }} />
+              {selectedTutor.isLive && <span className="absolute bottom-1 right-1 w-3.5 h-3.5 bg-green-400 border-2 border-gray-900 rounded-full" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="font-bold text-white text-lg sm:text-xl leading-tight truncate">{selectedTutor.name}</h2>
+              {selectedTutor.nameAr && selectedTutor.nameAr !== selectedTutor.name && (
+                <p className="text-gray-300 text-xs sm:text-sm font-cairo truncate">{selectedTutor.nameAr}</p>
+              )}
+              {selectedTutor.category && (
+                <span className="inline-block mt-1 text-[11px] font-semibold bg-white/15 text-blue-200 px-2.5 py-0.5 rounded-full max-w-full truncate">
+                  {selectedTutor.category}
+                </span>
+              )}
+              {selectedTutor.isVerified && (
+                <div className="flex items-center gap-1 mt-1">
+                  <CheckCircle className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                  <span className="text-blue-400 text-xs font-semibold truncate">{t('Verified Tutor', 'أستاذ موثق', 'Enseignant vérifié')}</span>
+                </div>
+              )}
+              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                {selectedTutor.reviewCount > 0 && selectedTutor.rating != null ? (
+                  <span className="flex items-center gap-1 text-yellow-400 text-xs sm:text-sm font-bold">
+                    <Star className="w-3.5 h-3.5 fill-yellow-400" /> {selectedTutor.rating} ({selectedTutor.reviewCount})
+                  </span>
+                ) : (
+                  <span className="text-gray-400 text-xs">{t('No reviews yet', 'لا توجد تقييمات بعد', 'Aucun avis')}</span>
+                )}
+                {selectedTutor.experienceYears > 0 && (
+                  <span className="text-gray-400 text-xs">• {t(`${selectedTutor.experienceYears} yrs`, `${selectedTutor.experienceYears} سنوات`, `${selectedTutor.experienceYears} ans`)}</span>
+                )}
               </div>
-            ))}
+            </div>
+            {selectedTutor.hourlyRate > 0 && (
+              <div className="text-right flex-shrink-0">
+                <p className="font-bold text-white text-base sm:text-xl whitespace-nowrap">{formatCurrency(selectedTutor.hourlyRate)}</p>
+                <p className="text-gray-400 text-[11px]">{t('per hour', 'في الساعة', 'par heure')}</p>
+              </div>
+            )}
           </div>
+        </div>
+
+        <div className="bg-white rounded-t-3xl -mt-3 p-4 space-y-5 pb-6">
+          {selectedTutor.isLive && selectedTutor.activeSessionUrl && (
+            <LiveClassCard
+              tutorName={selectedTutor.name}
+              avatarUrl={selectedTutor.avatarUrl}
+              subject={selectedTutor.activeSessionSubject || selectedTutor.subjects[0] || selectedTutor.category || t('Live Class', 'حصة مباشرة', 'Cours en direct')}
+              joining={joiningLiveTutorId === selectedTutor.id}
+              onJoin={() => handleJoinLiveTutorSession(selectedTutor)}
+              language={language}
+            />
+          )}
+          {(() => {
+            const realStats = [
+              { label: t('Students', 'الطلاب', 'Élèves'), value: String(selectedTutor.studentsCount ?? 0), icon: Users },
+              ...(selectedTutor.experienceYears > 0
+                ? [{ label: t('Experience', 'الخبرة', 'Expérience'), value: t(`${selectedTutor.experienceYears} yrs`, `${selectedTutor.experienceYears} سنوات`, `${selectedTutor.experienceYears} ans`), icon: Award }]
+                : []),
+              { label: t('Reviews', 'التقييمات', 'Avis'), value: String(selectedTutor.reviewCount), icon: Star },
+            ];
+            return (
+              <div className={`grid gap-2 ${realStats.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                {realStats.map(({ label, value, icon: Icon }) => (
+                  <div key={label} className="bg-gray-50 rounded-2xl p-2.5 text-center min-w-0">
+                    <Icon className="w-4 h-4 text-blue-500 mx-auto mb-1" />
+                    <p className="font-bold text-gray-800 text-xs sm:text-sm truncate">{value}</p>
+                    <p className="text-[10px] text-gray-400 truncate">{label}</p>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
           <TutorVideoIntro videoUrl={selectedTutor.videoUrl} tutorName={selectedTutor.name} language={language} />
           <div>
-            <h3 className="font-bold text-gray-900 mb-2">About</h3>
-            <p className="text-sm text-gray-600 leading-relaxed">{selectedTutor.bio}</p>
-            {selectedTutor.bioAr && (
-              <p className="text-sm text-gray-500 leading-relaxed mt-2 font-cairo text-right" dir="rtl">{selectedTutor.bioAr}</p>
+            <h3 className="font-bold text-gray-900 mb-2">{t('About', 'نبذة عن الأستاذ', 'À propos')}</h3>
+            {selectedTutor.bio || selectedTutor.bioAr ? (
+              <>
+                {selectedTutor.bio && <p className="text-sm text-gray-600 leading-relaxed">{selectedTutor.bio}</p>}
+                {selectedTutor.bioAr && selectedTutor.bioAr !== selectedTutor.bio && (
+                  <p className="text-sm text-gray-500 leading-relaxed mt-2 font-cairo text-right" dir="rtl">{selectedTutor.bioAr}</p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-gray-400">{t('The teacher has not added a bio yet.', 'لم يضف الأستاذ نبذة تعريفية بعد.', 'L\'enseignant n\'a pas encore ajouté de biographie.')}</p>
             )}
           </div>
           <div>
-            <h3 className="font-bold text-gray-900 mb-2">Subjects</h3>
-            <div className="flex flex-wrap gap-2">
-              {selectedTutor.subjects.map(s => (
-                <span key={s} className="bg-blue-50 text-blue-700 text-xs font-semibold px-3 py-1.5 rounded-full">{s}</span>
-              ))}
-            </div>
+            <h3 className="font-bold text-gray-900 mb-2">{t('Subjects', 'المواد', 'Matières')}</h3>
+            {selectedTutor.subjects.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {selectedTutor.subjects.map(s => (
+                  <span key={s} className="bg-blue-50 text-blue-700 text-xs font-semibold px-3 py-1.5 rounded-full">{s}</span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400">{t('The teacher has not added subjects yet.', 'لم يضف الأستاذ مواد بعد.', 'L\'enseignant n\'a pas encore ajouté de matières.')}</p>
+            )}
           </div>
-          <div>
-            <h3 className="font-bold text-gray-900 mb-2">Languages</h3>
-            <div className="flex gap-2">
-              {selectedTutor.languages.map(l => (
-                <span key={l} className="flex items-center gap-1.5 bg-gray-100 text-gray-700 text-xs font-medium px-3 py-1.5 rounded-full">
-                  <Globe className="w-3 h-3" /> {l}
-                </span>
-              ))}
+          {selectedTutor.languages.length > 0 && (
+            <div>
+              <h3 className="font-bold text-gray-900 mb-2">{t('Languages', 'اللغات', 'Langues')}</h3>
+              <div className="flex flex-wrap gap-2">
+                {selectedTutor.languages.map(l => (
+                  <span key={l} className="flex items-center gap-1.5 bg-gray-100 text-gray-700 text-xs font-medium px-3 py-1.5 rounded-full">
+                    <Globe className="w-3 h-3" /> {l}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
           <div>
-            <h3 className="font-bold text-gray-900 mb-2">Availability</h3>
-            <div className="space-y-2">
-              {tutorSchedule.map(slot => {
-                const DAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-                const DAYS_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-                const dayIdx = dayToNumber(slot.dayOfWeek);
-                return (
-                  <div key={slot.id} className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
-                    <span className="text-sm font-medium text-gray-700">{t(DAYS_EN[dayIdx], DAYS_AR[dayIdx])}</span>
-                    <span className="text-sm text-gray-500">{slot.startTime ? String(slot.startTime).slice(0, 5) : '09:00'} – {slot.endTime ? String(slot.endTime).slice(0, 5) : '10:00'}</span>
-                    <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">{t('Available', 'متاح')}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          <div>
-            <h3 className="font-bold text-gray-900 mb-3">Reviews ({selectedTutor.reviewCount})</h3>
-            <div className="space-y-3">
-              {[
-                { name: 'Ali Hassan', rating: 5, text: 'Excellent teacher! Very patient and explains concepts clearly.', avatar: 'A' },
-                { name: 'Sara Al-Mansouri', rating: 5, text: 'I improved so much in just a few sessions. Highly recommended!', avatar: 'S' },
-                { name: 'Khalid', rating: 4, text: 'Very knowledgeable and professional. Great experience overall.', avatar: 'K' },
-              ].map((r, i) => (
-                <div key={i} className="bg-gray-50 rounded-2xl p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className={`w-8 h-8 rounded-xl bg-gradient-to-br ${AVATAR_COLORS[i % AVATAR_COLORS.length]} flex items-center justify-center text-white text-xs font-bold`}>
-                      {r.avatar}
+            <h3 className="font-bold text-gray-900 mb-2">{t('Availability', 'أوقات التوفر', 'Disponibilités')}</h3>
+            {tutorSchedule.length === 0 ? (
+              <div className="bg-gray-50 border border-gray-100 rounded-2xl p-4 text-center">
+                <Calendar className="w-5 h-5 text-gray-300 mx-auto mb-1" />
+                <p className="text-xs text-gray-500">{t('No availability published yet', 'لم يتم نشر أوقات التوفر بعد', 'Aucune disponibilité publiée')}</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {tutorSchedule.map(slot => {
+                  const DAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                  const DAYS_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+                  const dayIdx = dayToNumber(slot.dayOfWeek);
+                  return (
+                    <div key={slot.id} className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-3">
+                      <span className="text-sm font-medium text-gray-700">{t(DAYS_EN[dayIdx], DAYS_AR[dayIdx])}</span>
+                      <span className="text-sm text-gray-500">{String(slot.startTime || '').slice(0, 5)} – {String(slot.endTime || '').slice(0, 5)}</span>
+                      <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">{t('Available', 'متاح', 'Disponible')}</span>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold text-gray-800">{r.name}</p>
-                      <div className="flex">
-                        {Array.from({ length: 5 }).map((_, j) => (
-                          <Star key={j} className={`w-3 h-3 ${j < r.rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200'}`} />
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-xs text-gray-600 leading-relaxed">{r.text}</p>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-gray-900">
+                {tutorReviews.length > 0
+                  ? `${t('Reviews', 'التقييمات', 'Avis')} (${tutorReviews.length})`
+                  : t('Reviews', 'التقييمات', 'Avis')}
+              </h3>
+            </div>
+
+            {canReviewSelectedTutor && (
+              <div className="bg-blue-50/50 border border-blue-100 rounded-2xl p-3.5 mb-3 space-y-2.5">
+                <p className="text-xs font-bold text-slate-800">{t('Write a review', 'أضف تقييمك', 'Laisser un avis')}</p>
+                <div className="flex items-center gap-1.5">
+                  {[1, 2, 3, 4, 5].map(star => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setProfileReviewRating(star)}
+                      className="p-1 rounded-lg hover:bg-blue-100/60 transition-colors"
+                      aria-label={`Rate ${star} stars`}
+                    >
+                      <Star className={`w-5 h-5 ${star <= profileReviewRating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300'}`} />
+                    </button>
+                  ))}
                 </div>
-              ))}
-            </div>
+                <textarea
+                  value={profileReviewComment}
+                  onChange={e => setProfileReviewComment(e.target.value.slice(0, 500))}
+                  rows={2}
+                  placeholder={t('Share your experience (optional)...', 'شارك تجربتك مع الأستاذ (اختياري)...', 'Partagez votre avis (optionnel)...')}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:border-blue-300 focus:ring-2 focus:ring-blue-100 resize-none"
+                />
+                {profileReviewError && <p className="text-[11px] text-red-600">{profileReviewError}</p>}
+                <button
+                  type="button"
+                  onClick={handleSubmitProfileReview}
+                  disabled={submittingProfileReview || profileReviewRating < 1}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-colors"
+                >
+                  {submittingProfileReview ? '...' : t('Submit Review', 'إرسال التقييم', 'Publier l\'avis')}
+                </button>
+              </div>
+            )}
+
+            {tutorReviews.length === 0 ? (
+              <div className="bg-gray-50 border border-gray-100 rounded-2xl p-4 text-center">
+                <p className="text-xs text-gray-500">{t('No reviews yet', 'لا توجد تقييمات بعد', 'Aucun avis pour le moment')}</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {tutorReviews.map((r, i) => (
+                  <div key={r.id} className="bg-gray-50 rounded-2xl p-3">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className={`w-8 h-8 rounded-xl bg-gradient-to-br ${AVATAR_COLORS[i % AVATAR_COLORS.length]} flex items-center justify-center text-white text-xs font-bold flex-shrink-0`}>
+                          {(r.reviewer_name || 'S').charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-gray-800 truncate">{r.reviewer_name}</p>
+                          <div className="flex">
+                            {Array.from({ length: 5 }).map((_, j) => (
+                              <Star key={j} className={`w-3 h-3 ${j < r.rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-200'}`} />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] text-gray-400 flex-shrink-0">
+                        {new Date(r.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                    {r.comment && <p className="text-xs text-gray-600 leading-relaxed">{r.comment}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
-      <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-white border-t border-gray-100 p-4 flex gap-3">
+      <div className="shrink-0 w-full bg-white border-t border-gray-100 px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] flex gap-3">
         <button
           onClick={() => { nav('chat'); }}
-          className="flex-1 py-3 border border-blue-200 text-blue-600 rounded-xl font-semibold text-sm hover:bg-blue-50 transition-colors flex items-center justify-center gap-2"
+          className="flex-1 min-h-[44px] py-3 border border-blue-200 text-blue-600 rounded-xl font-semibold text-sm hover:bg-blue-50 transition-colors flex items-center justify-center gap-2"
         >
-          <MessageSquare className="w-4 h-4" /> Message
+          <MessageSquare className="w-4 h-4" /> {t('Message', 'مراسلة', 'Message')}
         </button>
         <button
           onClick={() => nav('booking')}
-          className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center justify-center gap-2"
+          className="flex-1 min-h-[44px] py-3 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center justify-center gap-2"
         >
-          <Calendar className="w-4 h-4" /> Book Session
+          <Calendar className="w-4 h-4" /> {t('Book Session', 'حجز حصة', 'Réserver')}
         </button>
       </div>
     </div>
   );
+  }
 
   if (screen === 'booking' && selectedTutor) return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
-      <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-20 flex items-center gap-3">
+    <div className="h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-hidden">
+      <div className="shrink-0 bg-white border-b border-gray-100 px-4 py-4 z-20 flex items-center gap-3">
         <button onClick={() => nav('tutor-profile')} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
         <h1 className="font-bold text-gray-900">Book a Session</h1>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 animate-slide-up pb-24">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4 animate-slide-up pb-6">
         <div className="bg-white rounded-2xl p-4 shadow-sm flex items-center gap-3">
           <img src={selectedTutor.avatarUrl} alt={selectedTutor.name} className="w-14 h-14 rounded-2xl object-cover"
             onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${selectedTutor.name}&background=3B82F6&color=fff`; }} />
@@ -2056,27 +2795,33 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           </div>
         </div>
       </div>
-      <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-white border-t border-gray-100 p-4">
+      <div className="shrink-0 w-full bg-white border-t border-gray-100 px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <button
-          onClick={() => nav('payment')}
+          onClick={() => (!PAID_PLANS_ENABLED ? confirmBooking() : nav('payment'))}
           disabled={selectedSlots.length === 0}
-          className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+          className={`w-full py-3.5 text-white rounded-xl font-bold text-sm shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+            !PAID_PLANS_ENABLED
+              ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
+              : 'bg-blue-600 hover:bg-blue-700 shadow-blue-200'
+          }`}
         >
-          {t(`Continue to Payment (${selectedSlots.length} sessions) →`, `متابعة للدفع (${selectedSlots.length} حصص) ←`)}
+          {!PAID_PLANS_ENABLED
+            ? t(`Confirm Free Trial Booking (${selectedSlots.length} sessions) →`, `تأكيد الحجز التجريبي المجاني (${selectedSlots.length} حصص) ←`)
+            : t(`Continue to Payment (${selectedSlots.length} sessions) →`, `متابعة للدفع (${selectedSlots.length} حصص) ←`)}
         </button>
       </div>
     </div>
   );
 
   if (screen === 'payment' && selectedTutor) return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
-      <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-20 flex items-center gap-3">
+    <div className="h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-hidden">
+      <div className="shrink-0 bg-white border-b border-gray-100 px-4 py-4 z-20 flex items-center gap-3">
         <button onClick={() => nav('booking')} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
         <h1 className="font-bold text-gray-900">Payment</h1>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 animate-slide-up pb-24">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4 animate-slide-up pb-6">
         <div className="flex gap-2">
           {([
             { id: 'card', label: 'Card', Icon: CreditCard },
@@ -2133,7 +2878,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           ))}
         </div>
       </div>
-      <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-white border-t border-gray-100 p-4">
+      <div className="shrink-0 w-full bg-white border-t border-gray-100 px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <button
           onClick={confirmBooking}
           className="w-full py-3.5 bg-green-500 text-white rounded-xl font-bold text-sm hover:bg-green-600 shadow-lg shadow-green-200 transition-all active:scale-95"
@@ -2145,7 +2890,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   );
 
   if (screen === 'success') return (
-    <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 max-w-lg mx-auto shadow-2xl border-x border-slate-100">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col items-center justify-center p-6 overflow-x-hidden">
       <div className="text-center animate-bounce-in">
         <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
           <CheckCircle className="w-12 h-12 text-green-500" />
@@ -2174,30 +2919,33 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   );
 
   if (screen === 'chat' && selectedTutor) return (
-    <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto shadow-2xl border-x border-slate-100">
-      <div className="bg-white border-b border-gray-100 px-4 py-3 sticky top-0 z-20">
+    <div
+      className="w-full tm-app-shell bg-gray-50 flex flex-col overflow-hidden"
+      style={{ height: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh' }}
+    >
+      <div className="shrink-0 bg-white border-b border-gray-100 px-4 pt-[calc(0.75rem+env(safe-area-inset-top))] pb-3 z-20">
         <div className="flex items-center gap-3">
-          <button onClick={() => nav('tutor-profile')} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
+          <button onClick={() => nav('tutor-profile')} className="w-10 h-10 hover:bg-gray-100 rounded-xl transition-colors flex items-center justify-center flex-shrink-0">
             <ArrowLeft className="w-5 h-5 text-gray-600" />
           </button>
-          <div className="relative">
+          <div className="relative flex-shrink-0">
             <img src={selectedTutor.avatarUrl} alt={selectedTutor.name} className="w-10 h-10 rounded-xl object-cover border border-slate-100"
               onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${selectedTutor.name}&background=3B82F6&color=fff`; }} />
             {selectedTutor.isOnline && <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-400 border-2 border-white rounded-full" />}
           </div>
-          <div>
-            <p className="font-bold text-gray-800 text-sm">{selectedTutor.name}</p>
-            <p className="text-xs text-green-500 font-medium">{selectedTutor.isOnline ? t('Online now', 'متصل الآن') : t('Offline', 'غير متصل')}</p>
+          <div className="min-w-0 flex-1">
+            <p className="font-bold text-gray-800 text-sm truncate">{selectedTutor.name}</p>
+            <p className="text-xs text-green-500 font-medium">{selectedTutor.isOnline ? t('Online now', 'متصل الآن', 'En ligne') : t('Offline', 'غير متصل', 'Hors ligne')}</p>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-24">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-3">
         {realMessages.length === 0 ? (
-          <div className="text-center py-12 text-gray-400 space-y-2">
+          <div className="h-full flex flex-col items-center justify-center text-center py-12 text-gray-400 space-y-2">
             <MessageSquare className="w-10 h-10 mx-auto text-gray-300" />
-            <p className="text-xs font-semibold">{t('No messages yet', 'لا توجد رسائل بعد')}</p>
-            <p className="text-[11px]">{t('Send a message to start your conversation with the teacher.', 'أرسل رسالة للبدء بالمحادثة مع الأستاذ.')}</p>
+            <p className="text-sm font-semibold text-gray-500">{t('No messages yet', 'لا توجد رسائل بعد', 'Aucun message')}</p>
+            <p className="text-xs max-w-xs">{t('Send a message to start your conversation with the teacher.', 'أرسل رسالة للبدء بالمحادثة مع الأستاذ.', 'Envoyez un message pour démarrer la conversation.')}</p>
           </div>
         ) : (
           realMessages.map((msg) => {
@@ -2207,27 +2955,27 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             return (
               <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} animate-slide-up`}>
                 {!isMe && (
-                  <img src={selectedTutor.avatarUrl} alt="" className="w-7 h-7 rounded-lg object-cover mr-2 mt-auto flex-shrink-0"
+                  <img src={selectedTutor.avatarUrl} alt="" className="w-7 h-7 rounded-lg object-cover me-2 mt-auto flex-shrink-0"
                     onError={e => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${selectedTutor.name}&background=3B82F6&color=fff`; }} />
                 )}
-                <div className={`max-w-[75%] ${isMe ? 'items-end' : 'items-start'}`}>
-                  <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                <div className={`max-w-[80%] min-w-0 flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                  <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed break-words ${
                     isMe
-                      ? 'bg-blue-600 text-white rounded-br-md shadow-md shadow-blue-200'
-                      : 'bg-white text-gray-800 rounded-bl-md shadow-sm border border-slate-100'
+                      ? 'bg-blue-600 text-white rounded-br-md shadow-sm shadow-blue-200'
+                      : 'bg-white text-gray-800 rounded-bl-md shadow-sm border border-slate-200/70'
                   }`}>
                     {msg.content}
                   </div>
-                  <div className={`flex items-center gap-1 text-[10px] text-gray-400 mt-1 px-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`flex items-center gap-1 text-[11px] text-gray-500 mt-1 px-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
                     <span>{timeStr}</span>
                     {isMe && (
-                      <span className="font-bold">
+                      <span className="inline-flex items-center">
                         {msg.is_read || msg.status === 'read' ? (
-                          <span className="text-blue-500 font-extrabold">✓✓</span>
+                          <CheckCheck className="w-3.5 h-3.5 text-blue-500" />
                         ) : msg.status === 'delivered' ? (
-                          <span className="text-slate-400">✓✓</span>
+                          <CheckCheck className="w-3.5 h-3.5 text-slate-400" />
                         ) : (
-                          <span className="text-slate-400">✓</span>
+                          <Check className="w-3.5 h-3.5 text-slate-400" />
                         )}
                       </span>
                     )}
@@ -2237,20 +2985,23 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             );
           })
         )}
+        <div ref={chatEndRef} />
       </div>
 
-      <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-white border-t border-gray-100 p-3 flex gap-2 z-20">
+      <div className="shrink-0 w-full bg-white border-t border-gray-100 px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] flex items-center gap-2 z-20">
         <input
           value={chatInput}
           onChange={e => setChatInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && sendMessage()}
-          placeholder={t('Type a message to teacher...', 'اكتب رسالة للمعلم...')}
-          className="flex-1 px-4 py-2.5 rounded-xl bg-gray-100 text-sm focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all border border-transparent focus:border-blue-200"
+          onFocus={() => setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 120)}
+          placeholder={t('Type a message to teacher...', 'اكتب رسالة للمعلم...', 'Écrire un message...')}
+          className="flex-1 min-h-[44px] px-4 py-2.5 rounded-xl bg-gray-100 text-sm focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all border border-transparent focus:border-blue-200"
         />
         <button
           onClick={sendMessage}
           disabled={!chatInput.trim()}
-          className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-lg shadow-blue-200"
+          aria-label="Send message"
+          className="w-11 h-11 min-w-[44px] min-h-[44px] bg-blue-600 rounded-xl flex items-center justify-center text-white hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm shadow-blue-200 flex-shrink-0"
         >
           <Send className="w-4 h-4" />
         </button>
@@ -2355,8 +3106,8 @@ function BottomNav({ active, onChange, language, isDark }: {
   ];
 
   return (
-    <div className="sticky bottom-0 z-30 px-3 pb-3 pt-1 bg-transparent pointer-events-none">
-      <div className="grid grid-cols-4 gap-1.5 max-w-lg mx-auto rounded-[26px] glass-nav-bar px-2 py-1.5 pointer-events-auto transition-all duration-300">
+    <div className="sticky bottom-0 z-30 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-1 bg-transparent pointer-events-none w-full">
+      <div className="grid grid-cols-4 gap-1.5 w-full rounded-[26px] glass-nav-bar px-2 py-1.5 pointer-events-auto transition-all duration-300">
         {tabs.map(({ id, label, labelAr, Icon }) => {
           const isActive = active === id;
           return (
@@ -2393,4 +3144,3 @@ function BottomNav({ active, onChange, language, isDark }: {
     </div>
   );
 }
-
