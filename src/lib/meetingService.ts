@@ -119,7 +119,8 @@ export async function compressAndUploadWhiteboardImage(
       typeof crypto !== 'undefined' && crypto.randomUUID
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const storagePath = `${roomId}/${uid}.jpg`;
+    const normalizedRoomId = generateSecureRoomName(roomId);
+    const storagePath = `${normalizedRoomId}/${uid}.jpg`;
 
     const { error: uploadErr } = await supabase.storage
       .from('whiteboard-media')
@@ -181,6 +182,9 @@ const ICE_SERVERS: RTCIceServer[] = [
  */
 export function generateSecureRoomName(roomId: string): string {
   const cleanId = roomId.replace(/[^a-zA-Z0-9-]/g, '');
+  if (cleanId.startsWith('teachme-classroom-')) {
+    return cleanId;
+  }
   return `teachme-classroom-${cleanId || 'live-session'}`;
 }
 
