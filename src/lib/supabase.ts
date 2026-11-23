@@ -36,6 +36,10 @@ export type Database = {
           avatar_url: string | null;
           video_url: string | null;
           is_online: boolean;
+          is_live?: boolean;
+          active_session_url?: string | null;
+          active_session_subject?: string | null;
+          live_started_at?: string | null;
           response_time: string;
           is_verified: boolean;
           status: 'pending' | 'approved' | 'rejected' | 'info_requested' | 'suspended' | 'banned';

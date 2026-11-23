@@ -123,8 +123,24 @@ export default function App() {
     }
   }, [language]);
 
+  // Hide the inline dark splash overlay smoothly only AFTER React mounts and auth state resolves
+  useEffect(() => {
+    if (isAuthLoading || typeof document === 'undefined') return;
+    const splash = document.getElementById('tm-initial-splash');
+    if (!splash) return;
+    const raf = requestAnimationFrame(() => {
+      splash.classList.add('tm-splash-hidden');
+      window.setTimeout(() => {
+        splash.remove();
+      }, 260);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isAuthLoading]);
+
   useEffect(() => {
     let appUrlListener: any = null;
+    let isMounted = true;
+    let initialResolved = false;
 
     // 1. Global Capacitor Deep-Link listener for Mobile App
     const CapacitorApp = (window as any).Capacitor?.Plugins?.App;
@@ -144,75 +160,141 @@ export default function App() {
       }).then((l: any) => { appUrlListener = l; });
     }
 
-    // 2. Local storage session recovery (instant UI launch)
-    const savedUserStr = localStorage.getItem('tm_user_session');
-    let hasLocalSession = false;
-    if (savedUserStr) {
-      try {
-        const savedUser: User = JSON.parse(savedUserStr);
-        setUser(savedUser);
-        hasLocalSession = true;
-        authLog('Restored local user session from localStorage:', savedUser.email);
-        if (savedUser.role === 'admin') setAppState('admin-dashboard');
-        else if (savedUser.role === 'student') setAppState('student-app');
-        else setAppState(tutorRegistered ? 'tutor-dashboard' : 'tutor-register');
-        setIsAuthLoading(false); // Instant unlock! Zero wait time
-      } catch (e) {
-        authLog('Error parsing saved local session:', e);
-      }
-    }
-
-    // Fast 1.5s fallback safety timer to guarantee loading screen never freezes
+    // Safety ceiling timer so splash can never hang indefinitely on offline networks
     const loadingTimeout = setTimeout(() => {
-      setIsAuthLoading(false);
-    }, 1500);
+      if (isMounted) setIsAuthLoading(false);
+    }, 8000);
 
-    // 3. Complete & robust auth initialization flow
+    const cleanOAuthParamsFromUrl = () => {
+      if (typeof window === 'undefined') return;
+      const hasParams =
+        window.location.search.includes('code=') ||
+        window.location.hash.includes('access_token=') ||
+        window.location.hash.includes('refresh_token=');
+      if (!hasParams) return;
+      if (window.location.protocol !== 'file:') {
+        window.history.replaceState(null, '', window.location.pathname);
+      } else {
+        window.location.hash = '';
+      }
+    };
+
+    // Guard against concurrent duplicate handleSessionUser calls for the same user
+    let inFlightUserId: string | null = null;
+    const scheduleSessionUser = (sessionUser: any) => {
+      if (!sessionUser?.id) return;
+      if (inFlightUserId === sessionUser.id) return;
+      inFlightUserId = sessionUser.id;
+      // CRITICAL: Defer outside Supabase's onAuthStateChange callback so GoTrue releases
+      // its internal navigator.locks auth lock before supabase.from(...) calls getSession().
+      setTimeout(() => {
+        if (!isMounted) {
+          inFlightUserId = null;
+          return;
+        }
+        handleSessionUser(sessionUser)
+          .catch((err) => {
+            authLog(`handleSessionUser error: ${err?.message || err}`);
+          })
+          .finally(() => {
+            inFlightUserId = null;
+            if (isMounted) {
+              initialResolved = true;
+              setIsAuthLoading(false);
+              clearTimeout(loadingTimeout);
+            }
+          });
+      }, 0);
+    };
+
+    // 2. Register a single onAuthStateChange listener FIRST so no SIGNED_IN / INITIAL_SESSION event is ever missed.
+    //    NEVER await supabase.from()/rpc() directly inside this callback (causes @supabase/auth-js v2 lock deadlock).
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      authLog(`onAuthStateChange event fired: "${event}", userId: "${session?.user?.id || 'none'}"`);
+
+      if (event === 'SIGNED_OUT') {
+        authLog('User signed out event received. Clearing state & directing to login.');
+        localStorage.removeItem('tm_user_session');
+        localStorage.removeItem('tm_pending_oauth_role');
+        inFlightUserId = null;
+        if (isMounted) {
+          setUser(null);
+          setTutorProfile(null);
+          setTutorRegistered(false);
+          setAppState('auth');
+          setIsAuthLoading(false);
+          clearTimeout(loadingTimeout);
+        }
+        return;
+      }
+
+      if (
+        session?.user &&
+        (event === 'INITIAL_SESSION' ||
+          event === 'SIGNED_IN' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'USER_UPDATED')
+      ) {
+        cleanOAuthParamsFromUrl();
+        scheduleSessionUser(session.user);
+      }
+    });
+
+    // 3. Deterministic auth initialization:
+    //    CRITICAL: Always await supabase.auth.getSession() FIRST so @supabase/auth-js
+    //    (detectSessionInUrl: true, flowType: 'pkce') finishes its internal PKCE ?code= exchange
+    //    WITHOUT racing against a duplicate exchangeCodeForSession() or stripping ?code= prematurely.
     const initAuth = async () => {
       authLog('Starting initAuth execution...');
       try {
-        // First let Supabase detectSessionInUrl / persisted session resolve without racing
-        authLog('Querying supabase.auth.getSession()...');
-        let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        authLog('Awaiting supabase.auth.getSession() (allows detectSessionInUrl PKCE exchange to finish)...');
+        let { data: { session }, error: sessionError } = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AUTH_SESSION_TIMEOUT')), 7000))
+        ]);
         if (sessionError) {
-          authLog(`getSession error notice: ${sessionError.message}`);
+          authLog(`getSession notice: ${sessionError.message}`);
         }
 
+        // Fallback ONLY if getSession() did not yet produce a session and OAuth params remain in URL
+        // (e.g., Android WebView file:///android_asset/index.html#access_token=... or ?code=...)
         if (!session && typeof window !== 'undefined') {
-          const urlParams = new URLSearchParams(window.location.search);
-          const code = urlParams.get('code');
-          if (code) {
-            authLog('OAuth authorization code found without active session. Exchanging code for session...');
-            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-            if (error) {
-              authLog(`exchangeCodeForSession notice: ${error.message}`);
-            } else if (data?.session) {
-              session = data.session;
+          const fullUrl = window.location.href;
+          if (fullUrl.includes('access_token=') || fullUrl.includes('code=')) {
+            authLog('Session not yet hydrated from URL; running handleOAuthDeepLink fallback...');
+            const ok = await handleOAuthDeepLink(fullUrl);
+            if (ok) {
+              const retry = await supabase.auth.getSession();
+              session = retry.data.session;
             }
           }
         }
 
-        if (typeof window !== 'undefined' && (window.location.hash.includes('access_token=') || window.location.search.includes('code='))) {
-          window.history.replaceState(null, '', window.location.pathname);
-        }
-
         if (session?.user) {
+          cleanOAuthParamsFromUrl();
           authLog(`Active Supabase session retrieved for user: ${session.user.id}`);
           await handleSessionUser(session.user);
-        } else {
-          // Clear any stale localStorage session that has no valid Supabase JWT
-          if (hasLocalSession) {
+          initialResolved = true;
+        } else if (!initialResolved) {
+          if (localStorage.getItem('tm_user_session')) {
             authLog('No active Supabase JWT session found; clearing stale local session.');
             localStorage.removeItem('tm_user_session');
+          }
+          if (isMounted) {
             setUser(null);
+            setAppState('auth');
           }
           authLog('No session found. Directing to Sign In page');
-          setAppState('auth');
         }
       } catch (err: any) {
         authLog(`initAuth exception caught: ${err?.message || err}`);
+        if (isMounted && !initialResolved) {
+          setAppState('auth');
+        }
       } finally {
-        setIsAuthLoading(false);
+        if (isMounted) {
+          setIsAuthLoading(false);
+        }
         clearTimeout(loadingTimeout);
         authLog('initAuth finished. isAuthLoading set to false');
       }
@@ -220,32 +302,19 @@ export default function App() {
 
     initAuth();
 
-    // 4. Listen to Supabase auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      authLog(`onAuthStateChange event fired: "${event}", userId: "${session?.user?.id || 'none'}"`);
-      if (session?.user) {
-        await handleSessionUser(session.user);
-        setIsAuthLoading(false);
-      } else if (event === 'SIGNED_OUT') {
-        authLog('User signed out event received. Clearing state & directing to login.');
-        localStorage.removeItem('tm_user_session');
-        localStorage.removeItem('tm_pending_oauth_role');
-        setUser(null);
-        setTutorProfile(null);
-        setTutorRegistered(false);
-        setAppState('auth');
-        setIsAuthLoading(false);
-      }
-    });
-
     return () => {
+      isMounted = false;
+      clearTimeout(loadingTimeout);
       subscription.unsubscribe();
       if (appUrlListener?.remove) appUrlListener.remove();
     };
   }, []);
 
   const handleSessionUser = async (authUser: any) => {
-    if (!authUser?.id) return;
+    if (!authUser?.id) {
+      setIsAuthLoading(false);
+      return;
+    }
     authLog(`handleSessionUser processing for user: ${authUser.id} (${authUser.email})`);
 
     const pendingRole = localStorage.getItem('tm_pending_oauth_role') as 'student' | 'tutor' | 'admin' | null;
@@ -255,7 +324,7 @@ export default function App() {
       authUser.email?.split('@')[0] ||
       'User';
 
-    const fastFetch = <T,>(p: PromiseLike<T>, ms = 3000): Promise<T> => {
+    const fastFetch = <T,>(p: PromiseLike<T>, ms = 4500): Promise<T> => {
       return Promise.race([
         Promise.resolve(p),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), ms))
@@ -266,14 +335,14 @@ export default function App() {
     let tutorRow: any = null;
 
     try {
-      const [{ data: profData }, { data: tutData }] = await Promise.all([
+      const [{ data: profData, error: profErr }, { data: tutData }] = await Promise.all([
         fastFetch(
           supabase
             .from('profiles')
             .select('full_name, role, avatar_url')
             .eq('user_id', authUser.id)
             .maybeSingle()
-        ).catch(() => ({ data: null } as any)),
+        ).catch((err) => ({ data: null, error: err } as any)),
         fastFetch(
           supabase
             .from('tutors')
@@ -282,94 +351,119 @@ export default function App() {
             .maybeSingle()
         ).catch(() => ({ data: null } as any))
       ]);
+      if (profErr) {
+        authLog(`Profile query notice: ${profErr?.message || profErr}`);
+      }
       profile = profData;
       tutorRow = tutData;
-    } catch (_) {}
 
-    // Determine authoritative role without demoting existing admins or tutors
-    let resolvedRole: 'student' | 'tutor' | 'admin';
-    if (isAdminEmail(authUser.email) || profile?.role === 'admin') {
-      resolvedRole = 'admin';
-    } else if (tutorRow?.id || profile?.role === 'tutor') {
-      resolvedRole = 'tutor';
-    } else if (pendingRole === 'tutor' || authUser.user_metadata?.role === 'tutor') {
-      resolvedRole = 'tutor';
-    } else {
-      resolvedRole = 'student';
-    }
-
-    // Ensure profiles row exists (and update brand-new Google tutor role if selected)
-    if (!profile || (pendingRole === 'tutor' && profile.role === 'student' && !tutorRow?.id)) {
-      try {
-        await supabase.from('profiles').upsert(
-          {
-            user_id: authUser.id,
-            full_name: profile?.full_name || defaultName,
-            role: resolvedRole,
-            avatar_url: profile?.avatar_url || authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null
-          },
-          { onConflict: 'user_id' }
-        );
-      } catch (_) {}
-    }
-
-    // Ensure a pending tutors row exists for brand-new Google tutors immediately
-    if (resolvedRole === 'tutor' && !tutorRow?.id) {
-      try {
-        const { data: createdTutor } = await supabase
-          .from('tutors')
-          .upsert(
-            {
-              user_id: authUser.id,
-              name: profile?.full_name || defaultName,
-              name_ar: profile?.full_name || defaultName,
-              email: authUser.email || null,
-              avatar_url: authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null,
-              status: 'pending',
-              is_verified: false
-            },
-            { onConflict: 'user_id' }
-          )
-          .select('*')
-          .maybeSingle();
-        if (createdTutor) tutorRow = createdTutor;
-      } catch (_) {}
-    }
-
-    if (pendingRole) {
-      localStorage.removeItem('tm_pending_oauth_role');
-    }
-
-    const updatedUser: User = {
-      id: authUser.id,
-      name: profile?.full_name || defaultName,
-      email: authUser.email || '',
-      role: resolvedRole
-    };
-
-    localStorage.setItem('tm_user_session', JSON.stringify(updatedUser));
-    setUser(updatedUser);
-    setIsAuthLoading(false);
-
-    if (resolvedRole === 'admin') {
-      setAppState('admin-dashboard');
-    } else if (resolvedRole === 'student') {
-      setAppState('student-app');
-    } else {
-      if (isTutorProfileComplete(tutorRow)) {
-        localStorage.setItem(`tm_tutor_reg_${authUser.id}`, 'true');
-        setTutorRegistered(true);
-        setTutorProfile(mapDbTutorToProfile(tutorRow));
-        setAppState('tutor-dashboard');
+      // Determine authoritative role without demoting existing admins or tutors
+      let resolvedRole: 'student' | 'tutor' | 'admin';
+      if (isAdminEmail(authUser.email) || profile?.role === 'admin') {
+        resolvedRole = 'admin';
+      } else if (tutorRow?.id || profile?.role === 'tutor') {
+        resolvedRole = 'tutor';
+      } else if (pendingRole === 'tutor' || authUser.user_metadata?.role === 'tutor') {
+        resolvedRole = 'tutor';
       } else {
-        setTutorRegistered(false);
-        if (tutorRow) setTutorProfile(mapDbTutorToProfile(tutorRow));
-        setAppState('tutor-register');
+        resolvedRole = 'student';
       }
-    }
 
-    trackEvent('user_session_active', { role: updatedUser.role, user_id: updatedUser.id });
-    requestNotificationPermission().catch(() => {});
+      // Ensure profiles row exists (never hang on upsert — bounded by fastFetch)
+      if (!profile || (pendingRole === 'tutor' && profile.role === 'student' && !tutorRow?.id)) {
+        try {
+          await fastFetch(
+            supabase.from('profiles').upsert(
+              {
+                user_id: authUser.id,
+                full_name: profile?.full_name || defaultName,
+                role: resolvedRole,
+                avatar_url: profile?.avatar_url || authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null
+              },
+              { onConflict: 'user_id' }
+            ),
+            4000
+          );
+        } catch (upsertErr: any) {
+          authLog(`Profile upsert notice: ${upsertErr?.message || upsertErr}`);
+        }
+      }
+
+      // Ensure a pending tutors row exists for brand-new Google tutors immediately
+      if (resolvedRole === 'tutor' && !tutorRow?.id) {
+        try {
+          const { data: createdTutor } = await fastFetch(
+            supabase
+              .from('tutors')
+              .upsert(
+                {
+                  user_id: authUser.id,
+                  name: profile?.full_name || defaultName,
+                  name_ar: profile?.full_name || defaultName,
+                  email: authUser.email || null,
+                  avatar_url: authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null,
+                  status: 'pending',
+                  is_verified: false
+                },
+                { onConflict: 'user_id' }
+              )
+              .select('*')
+              .maybeSingle(),
+            4000
+          );
+          if (createdTutor) tutorRow = createdTutor;
+        } catch (tutUpsertErr: any) {
+          authLog(`Tutor upsert notice: ${tutUpsertErr?.message || tutUpsertErr}`);
+        }
+      }
+
+      if (pendingRole) {
+        localStorage.removeItem('tm_pending_oauth_role');
+      }
+
+      const updatedUser: User = {
+        id: authUser.id,
+        name: profile?.full_name || defaultName,
+        email: authUser.email || '',
+        role: resolvedRole
+      };
+
+      localStorage.setItem('tm_user_session', JSON.stringify(updatedUser));
+      setUser(updatedUser);
+
+      if (resolvedRole === 'admin') {
+        setAppState('admin-dashboard');
+      } else if (resolvedRole === 'student') {
+        setAppState('student-app');
+      } else {
+        if (isTutorProfileComplete(tutorRow)) {
+          localStorage.setItem(`tm_tutor_reg_${authUser.id}`, 'true');
+          setTutorRegistered(true);
+          setTutorProfile(mapDbTutorToProfile(tutorRow));
+          setAppState('tutor-dashboard');
+        } else {
+          setTutorRegistered(false);
+          if (tutorRow) setTutorProfile(mapDbTutorToProfile(tutorRow));
+          setAppState('tutor-register');
+        }
+      }
+
+      trackEvent('user_session_active', { role: updatedUser.role, user_id: updatedUser.id });
+      requestNotificationPermission().catch(() => {});
+    } catch (err: any) {
+      authLog(`handleSessionUser unexpected error: ${err?.message || err}`);
+      const fallbackRole: 'student' | 'tutor' | 'admin' = isAdminEmail(authUser.email) ? 'admin' : 'student';
+      const fallbackUser: User = {
+        id: authUser.id,
+        name: defaultName,
+        email: authUser.email || '',
+        role: fallbackRole
+      };
+      setUser(fallbackUser);
+      setAppState(fallbackRole === 'admin' ? 'admin-dashboard' : 'student-app');
+    } finally {
+      setIsAuthLoading(false);
+    }
   };
 
   const handleAuth = async (u: User) => {
@@ -435,12 +529,12 @@ export default function App() {
           bio_ar: profile.bioAr || profile.bio,
           subjects: profile.subjects,
           hourly_rate: profile.hourlyRate,
-          experience_years: profile.experienceYears || 5,
+          experience_years: profile.experienceYears || 0,
           languages: profile.languages,
           category: profile.category,
           video_url: profile.videoUrl || null,
-          is_online: true,
-          response_time: 'within an hour',
+          is_online: false,
+          response_time: null,
           is_verified: false,
           status: 'pending',
           certificates: profile.certificates || [],
@@ -538,15 +632,12 @@ export default function App() {
 
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 max-w-lg mx-auto shadow-2xl border-x border-slate-100">
-        <div className="flex flex-col items-center animate-pulse">
-          <span className="text-4xl font-black bg-gradient-to-r from-violet-600 via-indigo-600 to-blue-500 bg-clip-text text-transparent mb-4">
+      <div className="min-h-[100dvh] w-full bg-white flex flex-col items-center justify-center p-6">
+        <div className="flex flex-col items-center">
+          <span className={`text-4xl font-black tracking-tight bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent mb-4 ${language === 'ar' ? 'font-cairo py-1' : ''}`}>
             {language === 'ar' ? 'علمني' : 'Teach Me'}
           </span>
-          <div className="flex items-center gap-2.5 text-slate-500 text-sm font-medium bg-white px-4 py-2.5 rounded-2xl shadow-sm border border-slate-100">
-            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-            <span>{language === 'ar' ? 'جاري التحقق من الجلسة...' : 'Verifying session...'}</span>
-          </div>
+          <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
         </div>
       </div>
     );

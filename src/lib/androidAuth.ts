@@ -3,7 +3,8 @@ import { Browser } from '@capacitor/browser';
 import { App } from '@capacitor/app';
 
 export const ANDROID_PACKAGE_NAME = 'com.teachme.app';
-export const ANDROID_OAUTH_REDIRECT_URI = 'com.teachme.app://google-auth';
+export const ANDROID_OAUTH_REDIRECT_URI = 'com.teachme.app://login-callback';
+export const ANDROID_LEGACY_OAUTH_REDIRECT_URI = 'com.teachme.app://google-auth';
 export const PRODUCTION_WEB_URL = 'https://teachmelearn.netlify.app';
 
 /**
@@ -11,23 +12,47 @@ export const PRODUCTION_WEB_URL = 'https://teachmelearn.netlify.app';
  */
 export const isAndroidNative = (): boolean => {
   if (typeof window === 'undefined') return false;
-  
+
   const origin = window.location.origin || '';
   const protocol = window.location.protocol || '';
-  const isFileScheme = protocol === 'file:' || origin === 'file://' || origin === 'null' || origin.startsWith('file:');
-  
+  const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
+
+  const isFileScheme =
+    protocol === 'file:' ||
+    origin === 'file://' ||
+    origin === 'null' ||
+    origin.startsWith('file:');
+
   const isCapacitorNative = Boolean(
     (window as any).Capacitor?.isNativePlatform?.() ||
     ((window as any).Capacitor && (window as any).Capacitor?.getPlatform?.() === 'android')
   );
 
-  return isCapacitorNative || isFileScheme;
+  const isAndroidWebViewUA =
+    /; wv\)/i.test(ua) ||
+    (/\bAndroid\b/i.test(ua) && /\bVersion\/[\d.]+/i.test(ua)) ||
+    Boolean((window as any).AndroidWebView || (window as any).TeachMeAndroid);
+
+  return isCapacitorNative || isFileScheme || isAndroidWebViewUA;
+};
+
+/**
+ * Returns true specifically when running inside a file:// Android WebView shell
+ * (without Capacitor native plugin bridge).
+ */
+export const isPureFileWebView = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const protocol = window.location.protocol || '';
+  const origin = window.location.origin || '';
+  const isFile = protocol === 'file:' || origin === 'file://' || origin === 'null' || origin.startsWith('file:');
+  const hasCapNative = Boolean((window as any).Capacitor?.isNativePlatform?.());
+  return isFile && !hasCapNative;
 };
 
 /**
  * Returns a valid, safe redirect URL that will NEVER be file:// or null.
- * In Capacitor/Android native shells, always returns the custom deep-link scheme
- * so OAuth returns directly into the app instead of staying in an external browser.
+ * In Android WebView / Capacitor shells, always returns the custom Deep Link
+ * (`com.teachme.app://login-callback`) so OAuth returns directly into the app.
  */
 export const getSafeRedirectUrl = (): string => {
   if (typeof window === 'undefined') return PRODUCTION_WEB_URL;
@@ -44,7 +69,7 @@ export const getSafeRedirectUrl = (): string => {
     return PRODUCTION_WEB_URL;
   }
 
-  const webRedirect = `${origin}/`;
+  const webRedirect = origin;
   authLog(`Using Web redirect URI: ${webRedirect}`);
   return webRedirect;
 };
@@ -70,23 +95,32 @@ export async function checkGoogleProviderEnabled(): Promise<{ enabled: boolean; 
     }
     return { enabled: true };
   } catch (_) {
-    // Do not block OAuth if settings check fails due to transient network/CORS issue
     return { enabled: true };
   }
 }
 
 /**
- * Handles incoming deep link URL (e.g., com.teachme.app://google-auth?code=... or #access_token=...)
+ * Handles incoming deep link URL:
+ *   com.teachme.app://login-callback?code=...
+ *   com.teachme.app://login-callback#access_token=...&refresh_token=...
+ *   com.teachme.app://google-auth?...
  */
 export async function handleOAuthDeepLink(url: string): Promise<boolean> {
   if (!url) return false;
   authLog(`Processing deep link URL: ${url}`);
   try {
-    const rawUrl = url.replace('#', '?');
-    const urlObj = new URL(rawUrl);
-    const accessToken = urlObj.searchParams.get('access_token');
-    const refreshToken = urlObj.searchParams.get('refresh_token');
-    const code = urlObj.searchParams.get('code');
+    // Parse both query (?...) and hash (#...) parameters safely
+    const qIdx = url.indexOf('?');
+    const hIdx = url.indexOf('#');
+    const queryStr = qIdx >= 0 ? url.slice(qIdx + 1, hIdx > qIdx ? hIdx : undefined) : '';
+    const hashStr = hIdx >= 0 ? url.slice(hIdx + 1) : '';
+
+    const queryParams = new URLSearchParams(queryStr);
+    const hashParams = new URLSearchParams(hashStr);
+
+    const accessToken = hashParams.get('access_token') || queryParams.get('access_token');
+    const refreshToken = hashParams.get('refresh_token') || queryParams.get('refresh_token');
+    const code = queryParams.get('code') || hashParams.get('code');
 
     if (accessToken && refreshToken) {
       authLog('Setting session from deep link access_token and refresh_token');
@@ -117,8 +151,11 @@ export async function handleOAuthDeepLink(url: string): Promise<boolean> {
 }
 
 /**
- * Performs Android-specific Google Sign-In using Chrome Custom Tabs / Deep Linking.
- * Bypasses disallowed_useragent restrictions of standard embedded WebViews.
+ * Performs Android WebView / Capacitor Google Sign-In WITHOUT exiting to an external browser.
+ * - Uses custom Deep Link `com.teachme.app://login-callback`.
+ * - In pure Android WebView (`file:///android_asset/index.html`), navigates inside the WebView
+ *   (which uses a clean Chrome User-Agent and intercepts `com.teachme.app://login-callback`).
+ * - In Capacitor native, opens in-app Chrome Custom Tabs (`Browser.open`) and listens on `appUrlOpen`.
  */
 export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'admin'): Promise<{ success: boolean; error?: string }> {
   try {
@@ -130,7 +167,7 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
       return { success: false, error: providerStatus.reason };
     }
 
-    const redirectUri = getSafeRedirectUrl();
+    const redirectUri = ANDROID_OAUTH_REDIRECT_URI;
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -156,11 +193,25 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
 
     authLog(`OAuth URL generated for Android: ${data.url}`);
 
-    // Try native Capacitor Browser & App plugins first
+    // Pure file:///android_asset WebView: stay inside the WebView itself (MainActivity sets Chrome UA + intercepts deep link)
+    if (isPureFileWebView()) {
+      authLog('Pure Android WebView detected — navigating in-app inside WebView');
+      window.location.href = data.url;
+      return { success: true };
+    }
+
+    // Capacitor native: use in-app Chrome Custom Tab + App deep-link listener
     try {
       const urlListener = await App.addListener('appUrlOpen', async (event: { url: string }) => {
         authLog(`appUrlOpen event fired in performAndroidGoogleSignIn: ${event.url}`);
-        if (event.url && (event.url.includes('google-auth') || event.url.includes('com.teachme.app') || event.url.includes('access_token') || event.url.includes('code='))) {
+        if (
+          event.url &&
+          (event.url.includes('login-callback') ||
+            event.url.includes('google-auth') ||
+            event.url.includes('com.teachme.app') ||
+            event.url.includes('access_token') ||
+            event.url.includes('code='))
+        ) {
           try {
             await handleOAuthDeepLink(event.url);
           } finally {
@@ -176,17 +227,10 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
       await Browser.open({ url: data.url, presentationStyle: 'popover' });
       return { success: true };
     } catch (pluginErr) {
-      authLog(`Capacitor plugin open fallback: ${pluginErr}`);
-      if (typeof window !== 'undefined' && (window as any).open) {
-        const win = window.open(data.url, '_system');
-        if (!win) {
-          window.location.href = data.url;
-        }
-        return { success: true };
-      } else {
-        window.location.href = data.url;
-        return { success: true };
-      }
+      // Never use _system external browser — stay inside the current WebView
+      authLog(`Capacitor Browser plugin unavailable (${pluginErr}); staying in-app via WebView navigation`);
+      window.location.href = data.url;
+      return { success: true };
     }
   } catch (err: any) {
     authLog(`performAndroidGoogleSignIn exception: ${err.message}`);
