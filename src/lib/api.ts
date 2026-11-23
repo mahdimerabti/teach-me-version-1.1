@@ -25,6 +25,20 @@ export function joinLiveSessionRemote(sessionId: string) {
   return supabase.rpc('join_live_session', { p_session_id: sessionId });
 }
 
+export function ensureLiveRoomRemote(
+  roomId: string,
+  displayName: string,
+  role: 'host' | 'student',
+  avatarUrl?: string
+) {
+  return supabase.rpc('ensure_live_room', {
+    p_room_id: roomId,
+    p_display_name: displayName,
+    p_role: role,
+    p_avatar_url: avatarUrl ?? null
+  });
+}
+
 export function fetchCreditBalance() {
   return supabase.rpc('credit_balance');
 }

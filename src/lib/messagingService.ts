@@ -51,12 +51,13 @@ export async function getOrCreateConversation(studentId: string, tutorUserIdOrId
       realTutorUserId = tData.user_id;
     }
 
-    // 1. Check if conversation already exists
+    // 1. Check if conversation already exists between studentId and realTutorUserId
     const { data: existing } = await supabase
       .from('conversations')
       .select('id')
-      .or(`student_id.eq.${studentId},tutor_id.eq.${studentId}`)
-      .or(`student_id.eq.${realTutorUserId},tutor_id.eq.${realTutorUserId}`)
+      .or(
+        `and(student_id.eq.${studentId},tutor_id.eq.${realTutorUserId}),and(student_id.eq.${realTutorUserId},tutor_id.eq.${studentId})`
+      )
       .limit(1)
       .maybeSingle();
 
@@ -79,14 +80,24 @@ export async function getOrCreateConversation(studentId: string, tutorUserIdOrId
       .maybeSingle();
 
     if (createError) {
+      // Handle race condition where conversation was created simultaneously
+      const { data: retryExisting } = await supabase
+        .from('conversations')
+        .select('id')
+        .or(
+          `and(student_id.eq.${studentId},tutor_id.eq.${realTutorUserId}),and(student_id.eq.${realTutorUserId},tutor_id.eq.${studentId})`
+        )
+        .limit(1)
+        .maybeSingle();
+      if (retryExisting?.id) return retryExisting.id;
       console.warn('Notice creating conversation in DB:', createError.message);
-      return newId;
+      return null;
     }
 
     return created?.id || newId;
   } catch (err) {
     console.warn('Exception in getOrCreateConversation:', err);
-    return generateUUID();
+    return null;
   }
 }
 
@@ -109,27 +120,31 @@ export async function fetchUserConversations(userId: string, isTutor: boolean): 
       return [];
     }
 
-    // Fetch participant profile info & unread message count for each conversation
+    // Batch-fetch participant names/avatars safely via SECURITY DEFINER RPC
+    const otherIds = Array.from(
+      new Set(convs.map((c) => (isTutor ? c.student_id : c.tutor_id)).filter(Boolean))
+    );
+    const profileMap: Record<string, { full_name?: string; avatar_url?: string }> = {};
+    if (otherIds.length > 0) {
+      try {
+        const { data: partProfs } = await supabase.rpc('get_participant_profiles', {
+          p_user_ids: otherIds
+        });
+        if (Array.isArray(partProfs)) {
+          partProfs.forEach((p: any) => {
+            if (p?.user_id) profileMap[p.user_id] = p;
+          });
+        }
+      } catch (_) {}
+    }
+
+    // Fetch unread message count for each conversation
     const enriched = await Promise.all(
       convs.map(async (conv) => {
         const otherUserId = isTutor ? conv.student_id : conv.tutor_id;
-
-        // Fetch participant name from profiles or tutors
-        let pName = isTutor ? 'Student' : 'Tutor';
-        let pAvatar = '';
-
-        try {
-          const { data: prof } = await supabase
-            .from('profiles')
-            .select('full_name, avatar_url')
-            .eq('user_id', otherUserId)
-            .maybeSingle();
-
-          if (prof) {
-            pName = prof.full_name || pName;
-            pAvatar = prof.avatar_url || '';
-          }
-        } catch (_) {}
+        const prof = profileMap[otherUserId];
+        const pName = prof?.full_name || (isTutor ? 'Student' : 'Tutor');
+        const pAvatar = prof?.avatar_url || '';
 
         // Fetch unread count
         let unread = 0;
@@ -248,14 +263,15 @@ export async function sendChatMessage({
     } catch (_) {}
 
     // 2. Update conversation last message snippet & timestamp
-    await supabase
-      .from('conversations')
-      .update({
-        last_message: content.trim(),
-        last_message_at: now
-      })
-      .eq('id', conversationId)
-      .catch(() => {});
+    try {
+      await supabase
+        .from('conversations')
+        .update({
+          last_message: content.trim(),
+          last_message_at: now
+        })
+        .eq('id', conversationId);
+    } catch (_) {}
 
     return data || fallbackMsg;
   } catch (err) {
