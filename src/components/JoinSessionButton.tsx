@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Clock3, Video } from 'lucide-react';
+import { Video } from 'lucide-react';
 import { joinLiveSessionRemote } from '../lib/api';
 import { parseTimeToMinutes, type BookedSession } from '../lib/bookingsStore';
+import { claimFreeTrialCredits, fetchBalanceAndHistory } from '../lib/credits';
+import { FREE_TRIAL_INITIAL_CREDITS, PAID_PLANS_ENABLED } from '../lib/config';
 
 const JOIN_WINDOW_MIN = 15;
 
@@ -15,6 +17,7 @@ type Props = {
 export default function JoinSessionButton({ session, language, onNeedCredits, onJoin }: Props) {
   const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
   const [now, setNow] = useState(() => Date.now());
+  const [joining, setJoining] = useState(false);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 30000);
@@ -27,30 +30,43 @@ export default function JoinSessionButton({ session, language, onNeedCredits, on
   const opensMs = startMs - JOIN_WINDOW_MIN * 60 * 1000;
 
   const handleJoin = async () => {
+    setJoining(true);
     try {
-      const { data, error } = await joinLiveSessionRemote(session.id);
+      let { data, error } = await joinLiveSessionRemote(session.id);
       if (error) throw error;
-      
-      const res = data as any;
-      if (res.error === 'insufficient_credits') {
+
+      let res = data as any;
+      // During Free Trial mode, auto-claim free trial credits if balance was 0 and retry once
+      if (res?.error === 'insufficient_credits' && !PAID_PLANS_ENABLED) {
+        const claim = await claimFreeTrialCredits(FREE_TRIAL_INITIAL_CREDITS);
+        if (claim.ok && claim.balance > 0) {
+          const retry = await joinLiveSessionRemote(session.id);
+          if (!retry.error && retry.data) {
+            res = retry.data as any;
+          }
+        }
+      }
+
+      if (res?.error === 'insufficient_credits') {
         onNeedCredits();
         return;
-      } else if (res.error === 'too_early' && session.status !== 'live') {
-        // Fallback for test/preview join before start window
+      } else if (res?.error === 'too_early' && session.status !== 'live') {
         const fallbackRoom = session.liveRoomId || `teachme-room-${session.id.slice(0, 8)}`;
         onJoin(fallbackRoom);
         return;
-      } else if (res.error) {
+      } else if (res?.error) {
         alert(t(`Error joining session: ${res.error}`, `خطأ في الانضمام للحصة: ${res.error}`));
         return;
       }
-      
+
+      fetchBalanceAndHistory();
       onJoin(res.room_id);
     } catch (err: any) {
       console.error('Failed to join live session:', err);
-      // Fallback room ID for testing
       const testRoomId = session.liveRoomId || `teachme-room-${session.id.slice(0, 8)}`;
       onJoin(testRoomId);
+    } finally {
+      setJoining(false);
     }
   };
 
@@ -69,20 +85,27 @@ export default function JoinSessionButton({ session, language, onNeedCredits, on
     <div className="mt-3 space-y-1.5">
       <button
         onClick={handleJoin}
-        className={`w-full py-2.5 rounded-xl text-white text-sm font-bold shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 ${
+        disabled={joining}
+        className={`w-full py-2.5 rounded-xl text-white text-sm font-bold shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-60 ${
           isLive
-            ? 'bg-red-600 hover:bg-red-700 shadow-red-200 animate-pulse'
+            ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
             : isFuture
             ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
-            : 'bg-green-500 hover:bg-green-600 shadow-green-200'
+            : 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-200'
         }`}
       >
+        {isLive && (
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-200 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-white" />
+          </span>
+        )}
         <Video className="w-4 h-4" />
         {isLive
-          ? t('🔴 Join Live Lesson NOW', '🔴 انضم للحصة المباشرة الآن (الأستاذ متصل)')
+          ? t('Join Live Lesson NOW (1 Free Trial Credit)', 'انضم للحصة المباشرة الآن (رصيد تجريبي)', 'Rejoindre le cours en direct')
           : isFuture
-          ? t('🧪 Test Live Session & Zoom Room Now', '🧪 تجربة البث المباشر وغرفة زوم الآن')
-          : t('Join Live Session', 'انضم للحصة المباشرة')}
+          ? t('Test Live Session & Zoom Room Now', 'تجربة البث المباشر وغرفة زوم الآن', 'Tester la session en direct')
+          : t('Join Live Session', 'انضم للحصة المباشرة', 'Rejoindre la session en direct')}
       </button>
     </div>
   );

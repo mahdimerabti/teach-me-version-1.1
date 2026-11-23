@@ -90,6 +90,7 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
 
         const defaultName = form.name.trim() || trimmedEmail.split('@')[0];
         let userId = '';
+
         let activeSession: any = null;
 
         const { data: signUpData, error: authError } = await supabase.auth.signUp({
@@ -237,10 +238,24 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         const isRoleAdmin = role === 'admin';
 
         if (isRoleAdmin || isExactAdminEmail) {
-          const { data: authData, error: adminAuthError } = await supabase.auth.signInWithPassword({
-            email: trimmedEmail,
-            password: form.password
-          });
+          const withTimeout = <T,>(p: PromiseLike<T>, ms = 10000): Promise<T> =>
+            Promise.race([
+              Promise.resolve(p),
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error(t('Sign-in timed out. Please try again.', 'انتهت مهلة تسجيل الدخول. يرجى المحاولة مرة أخرى.'))),
+                  ms
+                )
+              )
+            ]);
+
+          const { data: authData, error: adminAuthError } = await withTimeout(
+            supabase.auth.signInWithPassword({
+              email: trimmedEmail,
+              password: form.password
+            }),
+            10000
+          );
 
           if (adminAuthError || !authData?.user || !authData?.session) {
             throw new Error(
@@ -255,16 +270,43 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           const adminId = authData.user.id;
           const adminFullName = authData.user.user_metadata?.full_name || 'System Administrator';
 
+          // Verify profile role (bounded by timeout so login can never hang)
+          let verifiedRole: Role = isExactAdminEmail ? 'admin' : 'student';
           try {
-            await supabase.from('profiles').upsert(
-              {
-                user_id: adminId,
-                full_name: adminFullName,
-                role: 'admin'
-              },
-              { onConflict: 'user_id' }
+            const { data: prof } = await withTimeout(
+              supabase
+                .from('profiles')
+                .select('full_name, role')
+                .eq('user_id', adminId)
+                .maybeSingle(),
+              4000
             );
+            if (prof?.role === 'admin') {
+              verifiedRole = 'admin';
+            } else if (isExactAdminEmail) {
+              await withTimeout(
+                supabase.from('profiles').upsert(
+                  {
+                    user_id: adminId,
+                    full_name: prof?.full_name || adminFullName,
+                    role: 'admin'
+                  },
+                  { onConflict: 'user_id' }
+                ),
+                4000
+              );
+              verifiedRole = 'admin';
+            }
           } catch (_) {}
+
+          if (verifiedRole !== 'admin') {
+            throw new Error(
+              t(
+                'This account does not have administrator privileges.',
+                'هذا الحساب لا يملك صلاحيات المشرف.'
+              )
+            );
+          }
 
           const adminUser = {
             name: adminFullName,
@@ -421,7 +463,7 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 w-full max-w-md sm:max-w-lg md:max-w-xl mx-auto shadow-2xl border-x border-slate-100 relative overflow-hidden">
+    <div className="min-h-[100dvh] w-full tm-app-shell bg-slate-50 flex flex-col items-center justify-center p-4 sm:p-6 relative overflow-hidden">
       <div className={`absolute top-4 ${language === 'ar' ? 'left-4' : 'right-4'} z-30 flex gap-1`}>
         {(['en', 'ar', 'fr'] as const).map(lang => (
           <button

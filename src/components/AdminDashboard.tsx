@@ -45,25 +45,33 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
   const fetchData = useCallback(async () => {
     setLoading(true);
     setFetchError(null);
+    const withTimeout = <T,>(p: PromiseLike<T>, ms = 8000): Promise<T> =>
+      Promise.race([
+        Promise.resolve(p),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Request timed out while loading admin data. Please click Refresh.')), ms))
+      ]);
     try {
       const [
         { data: tutorsData, error: tutorsErr },
         { data: sessionsData, error: sessionsErr },
         { data: txData, error: txErr }
-      ] = await Promise.all([
-        supabase
-          .from('tutors')
-          .select('*')
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('sessions')
-          .select('*')
-          .order('date', { ascending: false }),
-        supabase
-          .from('credit_transactions')
-          .select('*')
-          .order('created_at', { ascending: false })
-      ]);
+      ] = await withTimeout(
+        Promise.all([
+          supabase
+            .from('tutors')
+            .select('*')
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('sessions')
+            .select('*')
+            .order('date', { ascending: false }),
+          supabase
+            .from('credit_transactions')
+            .select('*')
+            .order('created_at', { ascending: false })
+        ]),
+        8000
+      );
 
       if (tutorsErr) {
         console.error('Error fetching tutors:', tutorsErr);
