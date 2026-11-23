@@ -942,12 +942,31 @@ export default function ZoomViewerWidget({
       if (mode === 'resize-obj') {
         const aspect = obj.width / Math.max(1, obj.height);
         const dx = cur.x - startPt.x;
-        const nextW = Math.max(48, Math.round(obj.width + dx));
-        const nextH = Math.max(32, Math.round(nextW / aspect));
+        const dy = cur.y - startPt.y;
+        const delta = Math.abs(dx) >= Math.abs(dy) ? dx : dy * aspect;
+        let nextW = Math.max(48, Math.round(obj.width + delta));
+        let nextH = Math.max(24, Math.round(nextW / aspect));
+        let nextFontSize = obj.fontSize;
+
+        if (obj.kind === 'text') {
+          const baseFontSize = obj.fontSize || 22;
+          const rawScale = nextW / Math.max(1, obj.width);
+          const clampedFontSize = Math.max(10, Math.min(160, Math.round(baseFontSize * rawScale)));
+          const effectiveScale = clampedFontSize / Math.max(1, baseFontSize);
+          nextFontSize = clampedFontSize;
+          nextW = Math.max(48, Math.round(obj.width * effectiveScale));
+          nextH = Math.max(24, Math.round(obj.height * effectiveScale));
+        }
+
         setObjects((prev) =>
           prev.map((o) => {
             if (o.id !== obj.id) return o;
-            updated = { ...o, width: nextW, height: nextH };
+            updated = {
+              ...o,
+              width: nextW,
+              height: nextH,
+              ...(o.kind === 'text' ? { fontSize: nextFontSize } : {})
+            };
             return updated;
           })
         );
@@ -982,6 +1001,22 @@ export default function ZoomViewerWidget({
     if (!canDraw) return;
     const nextZ = Math.max(1, (obj.zIndex || 1) + delta);
     const updated = { ...obj, zIndex: nextZ };
+    setObjects((prev) => prev.map((o) => (o.id === obj.id ? updated : o)));
+    commitObjectUpdate(updated, false);
+  };
+
+  const adjustTextFontSize = (obj: WhiteboardObjectPayload, delta: number) => {
+    if (!canDraw || obj.kind !== 'text') return;
+    const baseFontSize = obj.fontSize || 22;
+    const nextFontSize = Math.max(10, Math.min(160, Math.round(baseFontSize + delta)));
+    if (nextFontSize === baseFontSize) return;
+    const scale = nextFontSize / Math.max(1, baseFontSize);
+    const updated: WhiteboardObjectPayload = {
+      ...obj,
+      fontSize: nextFontSize,
+      width: Math.max(48, Math.round(obj.width * scale)),
+      height: Math.max(24, Math.round(obj.height * scale))
+    };
     setObjects((prev) => prev.map((o) => (o.id === obj.id ? updated : o)));
     commitObjectUpdate(updated, false);
   };
@@ -1131,6 +1166,27 @@ export default function ZoomViewerWidget({
           >
             {/* Object Mini Action Pill */}
             <div className="pointer-events-auto absolute -top-11 left-1/2 -translate-x-1/2 bg-white border border-slate-200 shadow-md rounded-xl px-1 py-1 flex items-center gap-0.5 whitespace-nowrap">
+              {selectedObject.kind === 'text' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => adjustTextFontSize(selectedObject, -4)}
+                    className="h-8 px-2 rounded-lg hover:bg-slate-100 text-slate-700 text-xs font-bold flex items-center justify-center"
+                    title={t('Smaller text', 'تصغير النص', 'Réduire le texte')}
+                  >
+                    A-
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => adjustTextFontSize(selectedObject, 4)}
+                    className="h-8 px-2 rounded-lg hover:bg-slate-100 text-slate-700 text-xs font-bold flex items-center justify-center"
+                    title={t('Larger text', 'تكبير النص', 'Agrandir le texte')}
+                  >
+                    A+
+                  </button>
+                  <div className="w-px h-4 bg-slate-200 mx-0.5" />
+                </>
+              )}
               <button
                 type="button"
                 onClick={() => adjustObjectLayer(selectedObject, 1)}
