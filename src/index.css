@@ -8,16 +8,89 @@
   font-family: 'Cairo', sans-serif;
 }
 
+:root {
+  /* Unified Design Tokens — White + Blue EdTech System */
+  --tm-space-1: 4px;
+  --tm-space-2: 8px;
+  --tm-space-3: 12px;
+  --tm-space-4: 16px;
+  --tm-space-6: 24px;
+  --tm-radius-sm: 10px;
+  --tm-radius-md: 14px;
+  --tm-radius-lg: 20px;
+  --tm-radius-full: 9999px;
+  --tm-shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --tm-shadow-md: 0 8px 24px -4px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.04);
+  --tm-shadow-lg: 0 20px 50px -12px rgba(15, 23, 42, 0.14);
+  --tm-brand: #2563EB;
+  --tm-brand-hover: #1D4ED8;
+  --tm-surface: #FFFFFF;
+  --tm-surface-muted: #F8FAFC;
+  --tm-border: #E2E8F0;
+  --tm-ink: #0F172A;
+  --tm-ink-muted: #475569;
+}
+
 * {
   box-sizing: border-box;
 }
 
+html, body, #root {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   font-family: 'Inter', 'Cairo', sans-serif;
-  background: #F8FAFC;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--tm-ink);
+  background: var(--tm-surface-muted);
   margin: 0;
   padding: 0;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Accessible WCAG-AA visible focus states */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--tm-brand);
+  outline-offset: 2px;
+}
+
+/* Safe-area utility */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Responsive mobile-first app shell:
+   - Phones (<768px): true full-width 100% edge-to-edge, no side frame/margins
+   - Tablets (768px-1023px): centered max 720px
+   - Desktop (>=1024px): centered max 480px with subtle elevation */
+.tm-app-shell {
+  width: 100%;
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+@media (min-width: 768px) {
+  .tm-app-shell {
+    max-width: 720px;
+    border-left: 1px solid #e2e8f0;
+    border-right: 1px solid #e2e8f0;
+    box-shadow: 0 20px 50px -12px rgba(15, 23, 42, 0.12);
+  }
+}
+
+@media (min-width: 1024px) {
+  .tm-app-shell {
+    max-width: 480px;
+  }
 }
 
 /* Glassmorphic Taskbar & Apple/Duolingo Motion Style */

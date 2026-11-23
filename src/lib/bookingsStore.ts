@@ -129,17 +129,20 @@ supabase.auth.onAuthStateChange((_event, session) => {
   }
 
   if (session?.user) {
-    fetchSessions();
-    activeSessionsChannel = supabase
-      .channel('sessions-channel')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'sessions' },
-        () => {
-          fetchSessions();
-        }
-      )
-      .subscribe();
+    // Defer DB calls outside onAuthStateChange so GoTrue releases its auth lock first
+    setTimeout(() => {
+      void fetchSessions();
+      activeSessionsChannel = supabase
+        .channel('sessions-channel')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'sessions' },
+          () => {
+            void fetchSessions();
+          }
+        )
+        .subscribe();
+    }, 0);
   } else {
     globalSessions = [];
     notify();

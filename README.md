@@ -38,7 +38,7 @@
    ```bash
    npm run dev
    ```
-3. تصفح التطبيق عبر الرابط المحلي: `http://localhost:5173` (أو المنفذ النشط المحدد في الطرفية).
+3. تصفح التطبيق عبر الرابط المحلي: `https://teachmelearn.netlify.app/` (أو المنفذ النشط المحدد في الطرفية).
 
 ---
 
@@ -76,4 +76,4 @@ Teach Me is a comprehensive interactive educational platform designed to connect
    ```bash
    npm run dev
    ```
-3. Open the application locally at: `http://localhost:5173` (or the active port specified in your terminal).
+3. Open the application locally at: `https://teachmelearn.netlify.app/` (or the active port specified in your terminal).

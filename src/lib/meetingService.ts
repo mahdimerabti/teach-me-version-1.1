@@ -27,16 +27,122 @@ export type WhiteboardStrokePayload = {
   senderId: string;
 };
 
+export type WhiteboardObjectPayload = {
+  id: string;
+  kind: 'image' | 'text';
+  storagePath?: string | null;
+  signedUrl?: string | null;
+  textContent?: string | null;
+  color?: string;
+  fontSize?: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  zIndex: number;
+  senderId: string;
+};
+
 export type WhiteboardSyncEvent =
   | { type: 'stroke'; stroke: WhiteboardStrokePayload }
   | { type: 'undo'; strokeId: string; senderId: string }
   | { type: 'redo'; strokeId: string; senderId: string }
   | { type: 'clear'; senderId: string }
   | { type: 'sync-history'; strokes: WhiteboardStrokePayload[] }
+  | { type: 'sync-objects'; objects: WhiteboardObjectPayload[] }
+  | { type: 'object-upsert'; object: WhiteboardObjectPayload; ephemeral?: boolean }
+  | { type: 'object-delete'; objectId: string; senderId: string }
   | { type: 'permission'; targetUserId: string; canDraw: boolean; senderId: string }
   | { type: 'material'; materialId: string; customImageUrl?: string; senderId: string }
   | { type: 'viewport'; scale: number; position: { x: number; y: number }; senderId: string }
   | { type: 'laser'; x: number; y: number; visible: boolean; senderName: string; senderId: string };
+
+/**
+ * Generates a short-lived signed URL for a private whiteboard-media image.
+ */
+export async function getWhiteboardMediaSignedUrl(storagePath: string): Promise<string | null> {
+  if (!storagePath) return null;
+  try {
+    const { data, error } = await supabase.storage
+      .from('whiteboard-media')
+      .createSignedUrl(storagePath, 3600);
+    if (error || !data?.signedUrl) return null;
+    return data.signedUrl;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Compresses and resizes an image client-side (max 1600px, JPEG 0.82)
+ * and uploads it to the private `whiteboard-media` bucket under `<roomId>/<uuid>.jpg`.
+ */
+export async function compressAndUploadWhiteboardImage(
+  roomId: string,
+  file: File
+): Promise<{ storagePath: string; signedUrl: string; width: number; height: number } | { error: string }> {
+  try {
+    const imgUrl = URL.createObjectURL(file);
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Could not decode image file'));
+      el.src = imgUrl;
+    });
+    URL.revokeObjectURL(imgUrl);
+
+    const MAX_DIM = 1600;
+    let targetW = img.naturalWidth || 800;
+    let targetH = img.naturalHeight || 600;
+    if (targetW > MAX_DIM || targetH > MAX_DIM) {
+      const ratio = Math.min(MAX_DIM / targetW, MAX_DIM / targetH);
+      targetW = Math.round(targetW * ratio);
+      targetH = Math.round(targetH * ratio);
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return { error: 'Canvas unavailable' };
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, targetW, targetH);
+    ctx.drawImage(img, 0, 0, targetW, targetH);
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.82)
+    );
+    if (!blob) return { error: 'Failed to compress image' };
+
+    const uid =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const storagePath = `${roomId}/${uid}.jpg`;
+
+    const { error: uploadErr } = await supabase.storage
+      .from('whiteboard-media')
+      .upload(storagePath, blob, {
+        contentType: 'image/jpeg',
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadErr) {
+      return { error: uploadErr.message };
+    }
+
+    const signedUrl = await getWhiteboardMediaSignedUrl(storagePath);
+    if (!signedUrl) {
+      return { error: 'Uploaded image could not be signed for viewing' };
+    }
+
+    return { storagePath, signedUrl, width: targetW, height: targetH };
+  } catch (err: any) {
+    return { error: err?.message || 'Image upload failed' };
+  }
+}
 
 export type RoomParticipantState = {
   userId: string;
@@ -455,6 +561,47 @@ export class LiveRoomController {
           }
         }
       )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'whiteboard_objects',
+          filter: `room_id=eq.${this.roomId}`
+        },
+        async (payload: any) => {
+          if (this.isDestroyed) return;
+          if ((payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') && payload.new) {
+            const row = payload.new;
+            const signedUrl = row.storage_path ? await getWhiteboardMediaSignedUrl(row.storage_path) : null;
+            this.callbacks.onWhiteboardSync({
+              type: 'object-upsert',
+              object: {
+                id: row.id,
+                kind: row.kind === 'text' ? 'text' : 'image',
+                storagePath: row.storage_path || null,
+                signedUrl,
+                textContent: row.text_content || '',
+                color: row.color || '#0F172A',
+                fontSize: Number(row.font_size || 22),
+                x: Number(row.x || 0),
+                y: Number(row.y || 0),
+                width: Number(row.width || 320),
+                height: Number(row.height || 240),
+                rotation: Number(row.rotation || 0),
+                zIndex: Number(row.z_index || 1),
+                senderId: row.sender_id
+              }
+            });
+          } else if (payload.eventType === 'DELETE' && payload.old?.id) {
+            this.callbacks.onWhiteboardSync({
+              type: 'object-delete',
+              objectId: payload.old.id,
+              senderId: payload.old.sender_id || ''
+            });
+          }
+        }
+      )
       .on('broadcast', { event: 'active-mode' }, ({ payload }) => {
         if (this.isDestroyed || !payload?.mode) return;
         this.callbacks.onActiveModeChanged(payload.mode);
@@ -796,8 +943,42 @@ export class LiveRoomController {
       this.emitDrawingPermissions();
     }
 
-    // 2. Hydrate persisted non-undone strokes from public.whiteboard_strokes
-    await this.loadExistingWhiteboardStrokes();
+    // 2. Hydrate persisted non-undone strokes & objects from Supabase
+    await Promise.all([
+      this.loadExistingWhiteboardStrokes(),
+      this.loadExistingWhiteboardObjects()
+    ]);
+  }
+
+  private async loadExistingWhiteboardObjects(): Promise<void> {
+    const { data: rows, error } = await supabase
+      .from('whiteboard_objects')
+      .select('id, kind, storage_path, text_content, color, font_size, x, y, width, height, rotation, z_index, sender_id')
+      .eq('room_id', this.roomId)
+      .order('z_index', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(200);
+
+    if (error || !rows || this.isDestroyed) return;
+    const objects: WhiteboardObjectPayload[] = await Promise.all(
+      rows.map(async (row: any) => ({
+        id: row.id,
+        kind: (row.kind === 'text' ? 'text' : 'image') as 'image' | 'text',
+        storagePath: row.storage_path || null,
+        signedUrl: row.storage_path ? await getWhiteboardMediaSignedUrl(row.storage_path) : null,
+        textContent: row.text_content || '',
+        color: row.color || '#0F172A',
+        fontSize: Number(row.font_size || 22),
+        x: Number(row.x || 0),
+        y: Number(row.y || 0),
+        width: Number(row.width || 320),
+        height: Number(row.height || 240),
+        rotation: Number(row.rotation || 0),
+        zIndex: Number(row.z_index || 1),
+        senderId: row.sender_id
+      }))
+    );
+    this.callbacks.onWhiteboardSync({ type: 'sync-objects', objects });
   }
 
   private async loadExistingWhiteboardStrokes(): Promise<void> {
@@ -859,7 +1040,14 @@ export class LiveRoomController {
 
   public async broadcastWhiteboardEvent(event: WhiteboardSyncEvent): Promise<boolean> {
     // Reject unauthorized mutating whiteboard actions before persisting or broadcasting
-    if (event.type === 'stroke' || event.type === 'clear' || event.type === 'undo' || event.type === 'redo') {
+    if (
+      event.type === 'stroke' ||
+      event.type === 'clear' ||
+      event.type === 'undo' ||
+      event.type === 'redo' ||
+      event.type === 'object-upsert' ||
+      event.type === 'object-delete'
+    ) {
       if (!this.isUserAllowedToDraw(this.localUser.userId)) {
         return false;
       }
@@ -878,6 +1066,42 @@ export class LiveRoomController {
         });
         if (error) {
           console.warn('Whiteboard stroke rejected by server RLS:', error.message);
+          return false;
+        }
+      } else if (event.type === 'object-upsert' && !event.ephemeral) {
+        const obj = event.object;
+        const { error } = await supabase.from('whiteboard_objects').upsert(
+          {
+            id: obj.id,
+            room_id: this.roomId,
+            sender_id: this.localUser.userId,
+            kind: obj.kind,
+            storage_path: obj.storagePath || null,
+            text_content: obj.textContent || null,
+            color: obj.color || '#0F172A',
+            font_size: obj.fontSize || 22,
+            x: obj.x,
+            y: obj.y,
+            width: obj.width,
+            height: obj.height,
+            rotation: obj.rotation || 0,
+            z_index: obj.zIndex || 1,
+            updated_at: new Date().toISOString()
+          },
+          { onConflict: 'id' }
+        );
+        if (error) {
+          console.warn('Whiteboard object upsert rejected by server RLS:', error.message);
+          return false;
+        }
+      } else if (event.type === 'object-delete') {
+        const { error } = await supabase
+          .from('whiteboard_objects')
+          .delete()
+          .eq('id', event.objectId)
+          .eq('room_id', this.roomId);
+        if (error) {
+          console.warn('Whiteboard object delete rejected by server RLS:', error.message);
           return false;
         }
       } else if (event.type === 'undo') {
@@ -901,12 +1125,12 @@ export class LiveRoomController {
           return false;
         }
       } else if (event.type === 'clear') {
-        const { error } = await supabase
-          .from('whiteboard_strokes')
-          .delete()
-          .eq('room_id', this.roomId);
-        if (error) {
-          console.warn('Whiteboard clear rejected by server RLS:', error.message);
+        const [{ error }, { error: objErr }] = await Promise.all([
+          supabase.from('whiteboard_strokes').delete().eq('room_id', this.roomId),
+          supabase.from('whiteboard_objects').delete().eq('room_id', this.roomId)
+        ]);
+        if (error || objErr) {
+          console.warn('Whiteboard clear rejected by server RLS:', error?.message || objErr?.message);
           return false;
         }
         this.seenStrokeIds.clear();

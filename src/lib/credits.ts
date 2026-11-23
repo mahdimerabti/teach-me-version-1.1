@@ -164,17 +164,20 @@ supabase.auth.onAuthStateChange((_event, session) => {
   }
 
   if (session?.user) {
-    fetchBalanceAndHistory();
-    activeChannel = supabase
-      .channel('credit-tx-channel')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'credit_transactions' },
-        () => {
-          fetchBalanceAndHistory();
-        }
-      )
-      .subscribe();
+    // Defer DB/RPC calls outside onAuthStateChange so GoTrue releases its auth lock first
+    setTimeout(() => {
+      void fetchBalanceAndHistory();
+      activeChannel = supabase
+        .channel('credit-tx-channel')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'credit_transactions' },
+          () => {
+            void fetchBalanceAndHistory();
+          }
+        )
+        .subscribe();
+    }, 0);
   } else {
     globalBalance = 0;
     globalHistory = [];

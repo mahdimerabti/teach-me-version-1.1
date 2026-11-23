@@ -163,7 +163,7 @@ export default function App() {
     // Safety ceiling timer so splash can never hang indefinitely on offline networks
     const loadingTimeout = setTimeout(() => {
       if (isMounted) setIsAuthLoading(false);
-    }, 6000);
+    }, 8000);
 
     const cleanOAuthParamsFromUrl = () => {
       if (typeof window === 'undefined') return;
@@ -179,32 +179,64 @@ export default function App() {
       }
     };
 
-    // 2. Register a single onAuthStateChange listener FIRST so no SIGNED_IN / INITIAL_SESSION event is ever missed
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    // Guard against concurrent duplicate handleSessionUser calls for the same user
+    let inFlightUserId: string | null = null;
+    const scheduleSessionUser = (sessionUser: any) => {
+      if (!sessionUser?.id) return;
+      if (inFlightUserId === sessionUser.id) return;
+      inFlightUserId = sessionUser.id;
+      // CRITICAL: Defer outside Supabase's onAuthStateChange callback so GoTrue releases
+      // its internal navigator.locks auth lock before supabase.from(...) calls getSession().
+      setTimeout(() => {
+        if (!isMounted) {
+          inFlightUserId = null;
+          return;
+        }
+        handleSessionUser(sessionUser)
+          .catch((err) => {
+            authLog(`handleSessionUser error: ${err?.message || err}`);
+          })
+          .finally(() => {
+            inFlightUserId = null;
+            if (isMounted) {
+              initialResolved = true;
+              setIsAuthLoading(false);
+              clearTimeout(loadingTimeout);
+            }
+          });
+      }, 0);
+    };
+
+    // 2. Register a single onAuthStateChange listener FIRST so no SIGNED_IN / INITIAL_SESSION event is ever missed.
+    //    NEVER await supabase.from()/rpc() directly inside this callback (causes @supabase/auth-js v2 lock deadlock).
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       authLog(`onAuthStateChange event fired: "${event}", userId: "${session?.user?.id || 'none'}"`);
 
       if (event === 'SIGNED_OUT') {
         authLog('User signed out event received. Clearing state & directing to login.');
         localStorage.removeItem('tm_user_session');
         localStorage.removeItem('tm_pending_oauth_role');
+        inFlightUserId = null;
         if (isMounted) {
           setUser(null);
           setTutorProfile(null);
           setTutorRegistered(false);
           setAppState('auth');
           setIsAuthLoading(false);
+          clearTimeout(loadingTimeout);
         }
         return;
       }
 
-      if (session?.user && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED')) {
+      if (
+        session?.user &&
+        (event === 'INITIAL_SESSION' ||
+          event === 'SIGNED_IN' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'USER_UPDATED')
+      ) {
         cleanOAuthParamsFromUrl();
-        await handleSessionUser(session.user);
-        if (isMounted) {
-          initialResolved = true;
-          setIsAuthLoading(false);
-          clearTimeout(loadingTimeout);
-        }
+        scheduleSessionUser(session.user);
       }
     });
 
@@ -216,7 +248,10 @@ export default function App() {
       authLog('Starting initAuth execution...');
       try {
         authLog('Awaiting supabase.auth.getSession() (allows detectSessionInUrl PKCE exchange to finish)...');
-        let { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        let { data: { session }, error: sessionError } = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AUTH_SESSION_TIMEOUT')), 7000))
+        ]);
         if (sessionError) {
           authLog(`getSession notice: ${sessionError.message}`);
         }
@@ -276,7 +311,10 @@ export default function App() {
   }, []);
 
   const handleSessionUser = async (authUser: any) => {
-    if (!authUser?.id) return;
+    if (!authUser?.id) {
+      setIsAuthLoading(false);
+      return;
+    }
     authLog(`handleSessionUser processing for user: ${authUser.id} (${authUser.email})`);
 
     const pendingRole = localStorage.getItem('tm_pending_oauth_role') as 'student' | 'tutor' | 'admin' | null;
@@ -286,7 +324,7 @@ export default function App() {
       authUser.email?.split('@')[0] ||
       'User';
 
-    const fastFetch = <T,>(p: PromiseLike<T>, ms = 3000): Promise<T> => {
+    const fastFetch = <T,>(p: PromiseLike<T>, ms = 4500): Promise<T> => {
       return Promise.race([
         Promise.resolve(p),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), ms))
@@ -297,14 +335,14 @@ export default function App() {
     let tutorRow: any = null;
 
     try {
-      const [{ data: profData }, { data: tutData }] = await Promise.all([
+      const [{ data: profData, error: profErr }, { data: tutData }] = await Promise.all([
         fastFetch(
           supabase
             .from('profiles')
             .select('full_name, role, avatar_url')
             .eq('user_id', authUser.id)
             .maybeSingle()
-        ).catch(() => ({ data: null } as any)),
+        ).catch((err) => ({ data: null, error: err } as any)),
         fastFetch(
           supabase
             .from('tutors')
@@ -313,94 +351,119 @@ export default function App() {
             .maybeSingle()
         ).catch(() => ({ data: null } as any))
       ]);
+      if (profErr) {
+        authLog(`Profile query notice: ${profErr?.message || profErr}`);
+      }
       profile = profData;
       tutorRow = tutData;
-    } catch (_) {}
 
-    // Determine authoritative role without demoting existing admins or tutors
-    let resolvedRole: 'student' | 'tutor' | 'admin';
-    if (isAdminEmail(authUser.email) || profile?.role === 'admin') {
-      resolvedRole = 'admin';
-    } else if (tutorRow?.id || profile?.role === 'tutor') {
-      resolvedRole = 'tutor';
-    } else if (pendingRole === 'tutor' || authUser.user_metadata?.role === 'tutor') {
-      resolvedRole = 'tutor';
-    } else {
-      resolvedRole = 'student';
-    }
-
-    // Ensure profiles row exists (and update brand-new Google tutor role if selected)
-    if (!profile || (pendingRole === 'tutor' && profile.role === 'student' && !tutorRow?.id)) {
-      try {
-        await supabase.from('profiles').upsert(
-          {
-            user_id: authUser.id,
-            full_name: profile?.full_name || defaultName,
-            role: resolvedRole,
-            avatar_url: profile?.avatar_url || authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null
-          },
-          { onConflict: 'user_id' }
-        );
-      } catch (_) {}
-    }
-
-    // Ensure a pending tutors row exists for brand-new Google tutors immediately
-    if (resolvedRole === 'tutor' && !tutorRow?.id) {
-      try {
-        const { data: createdTutor } = await supabase
-          .from('tutors')
-          .upsert(
-            {
-              user_id: authUser.id,
-              name: profile?.full_name || defaultName,
-              name_ar: profile?.full_name || defaultName,
-              email: authUser.email || null,
-              avatar_url: authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null,
-              status: 'pending',
-              is_verified: false
-            },
-            { onConflict: 'user_id' }
-          )
-          .select('*')
-          .maybeSingle();
-        if (createdTutor) tutorRow = createdTutor;
-      } catch (_) {}
-    }
-
-    if (pendingRole) {
-      localStorage.removeItem('tm_pending_oauth_role');
-    }
-
-    const updatedUser: User = {
-      id: authUser.id,
-      name: profile?.full_name || defaultName,
-      email: authUser.email || '',
-      role: resolvedRole
-    };
-
-    localStorage.setItem('tm_user_session', JSON.stringify(updatedUser));
-    setUser(updatedUser);
-    setIsAuthLoading(false);
-
-    if (resolvedRole === 'admin') {
-      setAppState('admin-dashboard');
-    } else if (resolvedRole === 'student') {
-      setAppState('student-app');
-    } else {
-      if (isTutorProfileComplete(tutorRow)) {
-        localStorage.setItem(`tm_tutor_reg_${authUser.id}`, 'true');
-        setTutorRegistered(true);
-        setTutorProfile(mapDbTutorToProfile(tutorRow));
-        setAppState('tutor-dashboard');
+      // Determine authoritative role without demoting existing admins or tutors
+      let resolvedRole: 'student' | 'tutor' | 'admin';
+      if (isAdminEmail(authUser.email) || profile?.role === 'admin') {
+        resolvedRole = 'admin';
+      } else if (tutorRow?.id || profile?.role === 'tutor') {
+        resolvedRole = 'tutor';
+      } else if (pendingRole === 'tutor' || authUser.user_metadata?.role === 'tutor') {
+        resolvedRole = 'tutor';
       } else {
-        setTutorRegistered(false);
-        if (tutorRow) setTutorProfile(mapDbTutorToProfile(tutorRow));
-        setAppState('tutor-register');
+        resolvedRole = 'student';
       }
-    }
 
-    trackEvent('user_session_active', { role: updatedUser.role, user_id: updatedUser.id });
-    requestNotificationPermission().catch(() => {});
+      // Ensure profiles row exists (never hang on upsert — bounded by fastFetch)
+      if (!profile || (pendingRole === 'tutor' && profile.role === 'student' && !tutorRow?.id)) {
+        try {
+          await fastFetch(
+            supabase.from('profiles').upsert(
+              {
+                user_id: authUser.id,
+                full_name: profile?.full_name || defaultName,
+                role: resolvedRole,
+                avatar_url: profile?.avatar_url || authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null
+              },
+              { onConflict: 'user_id' }
+            ),
+            4000
+          );
+        } catch (upsertErr: any) {
+          authLog(`Profile upsert notice: ${upsertErr?.message || upsertErr}`);
+        }
+      }
+
+      // Ensure a pending tutors row exists for brand-new Google tutors immediately
+      if (resolvedRole === 'tutor' && !tutorRow?.id) {
+        try {
+          const { data: createdTutor } = await fastFetch(
+            supabase
+              .from('tutors')
+              .upsert(
+                {
+                  user_id: authUser.id,
+                  name: profile?.full_name || defaultName,
+                  name_ar: profile?.full_name || defaultName,
+                  email: authUser.email || null,
+                  avatar_url: authUser.user_metadata?.avatar_url || authUser.user_metadata?.picture || null,
+                  status: 'pending',
+                  is_verified: false
+                },
+                { onConflict: 'user_id' }
+              )
+              .select('*')
+              .maybeSingle(),
+            4000
+          );
+          if (createdTutor) tutorRow = createdTutor;
+        } catch (tutUpsertErr: any) {
+          authLog(`Tutor upsert notice: ${tutUpsertErr?.message || tutUpsertErr}`);
+        }
+      }
+
+      if (pendingRole) {
+        localStorage.removeItem('tm_pending_oauth_role');
+      }
+
+      const updatedUser: User = {
+        id: authUser.id,
+        name: profile?.full_name || defaultName,
+        email: authUser.email || '',
+        role: resolvedRole
+      };
+
+      localStorage.setItem('tm_user_session', JSON.stringify(updatedUser));
+      setUser(updatedUser);
+
+      if (resolvedRole === 'admin') {
+        setAppState('admin-dashboard');
+      } else if (resolvedRole === 'student') {
+        setAppState('student-app');
+      } else {
+        if (isTutorProfileComplete(tutorRow)) {
+          localStorage.setItem(`tm_tutor_reg_${authUser.id}`, 'true');
+          setTutorRegistered(true);
+          setTutorProfile(mapDbTutorToProfile(tutorRow));
+          setAppState('tutor-dashboard');
+        } else {
+          setTutorRegistered(false);
+          if (tutorRow) setTutorProfile(mapDbTutorToProfile(tutorRow));
+          setAppState('tutor-register');
+        }
+      }
+
+      trackEvent('user_session_active', { role: updatedUser.role, user_id: updatedUser.id });
+      requestNotificationPermission().catch(() => {});
+    } catch (err: any) {
+      authLog(`handleSessionUser unexpected error: ${err?.message || err}`);
+      const fallbackRole: 'student' | 'tutor' | 'admin' = isAdminEmail(authUser.email) ? 'admin' : 'student';
+      const fallbackUser: User = {
+        id: authUser.id,
+        name: defaultName,
+        email: authUser.email || '',
+        role: fallbackRole
+      };
+      setUser(fallbackUser);
+      setAppState(fallbackRole === 'admin' ? 'admin-dashboard' : 'student-app');
+    } finally {
+      setIsAuthLoading(false);
+    }
   };
 
   const handleAuth = async (u: User) => {
@@ -466,12 +529,12 @@ export default function App() {
           bio_ar: profile.bioAr || profile.bio,
           subjects: profile.subjects,
           hourly_rate: profile.hourlyRate,
-          experience_years: profile.experienceYears || 5,
+          experience_years: profile.experienceYears || 0,
           languages: profile.languages,
           category: profile.category,
           video_url: profile.videoUrl || null,
-          is_online: true,
-          response_time: 'within an hour',
+          is_online: false,
+          response_time: null,
           is_verified: false,
           status: 'pending',
           certificates: profile.certificates || [],

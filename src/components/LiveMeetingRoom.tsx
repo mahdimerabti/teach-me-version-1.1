@@ -713,8 +713,8 @@ export default function LiveMeetingRoom({
         </div>
       )}
 
-      {/* Top Header Bar (Clean White + Blue) */}
-      <header className="bg-white border-b border-slate-200 px-3 md:px-5 py-2.5 flex flex-wrap items-center justify-between gap-2 z-30 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
+      {/* Top Header Bar (Clean White + Blue, safe-area aware) */}
+      <header className="shrink-0 bg-white border-b border-slate-200 px-3 md:px-5 pt-[calc(0.5rem+env(safe-area-inset-top))] pb-2.5 flex flex-wrap items-center justify-between gap-2 z-30 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm flex-shrink-0">
@@ -976,6 +976,7 @@ export default function LiveMeetingRoom({
             <div className="flex-1 flex flex-col lg:flex-row gap-3 min-h-0 relative">
               <div className="flex-1 min-h-0 h-full">
                 <ZoomViewerWidget
+                  roomId={roomId}
                   language={language}
                   isEmbedded={true}
                   currentUserId={localUserId}
@@ -998,9 +999,9 @@ export default function LiveMeetingRoom({
                 />
               </div>
 
-              {/* Picture-in-Picture Cameras */}
-              <div className="flex lg:flex-col gap-2.5 h-28 sm:h-32 lg:h-full lg:w-60 overflow-x-auto lg:overflow-y-auto flex-shrink-0">
-                <div className="w-40 sm:w-44 lg:w-full h-full lg:h-40 flex-shrink-0">
+              {/* Picture-in-Picture Cameras (compact on phones so infinite whiteboard gets max space) */}
+              <div className="flex lg:flex-col gap-2 h-20 sm:h-28 lg:h-full lg:w-60 overflow-x-auto lg:overflow-y-auto flex-shrink-0">
+                <div className="w-32 sm:w-44 lg:w-full h-full lg:h-40 flex-shrink-0">
                   <VideoStreamTile
                     stream={localStream}
                     muted={true}
@@ -1277,14 +1278,14 @@ export default function LiveMeetingRoom({
         )}
       </div>
 
-      {/* Bottom Control Bar (Clean White + Blue, Responsive on 360-430px & Desktop) */}
-      <footer className="bg-white border-t border-slate-200 px-2.5 sm:px-6 py-2.5 flex flex-wrap items-center justify-center sm:justify-between gap-2 z-30 shadow-[0_-2px_10px_rgba(15,23,42,0.03)]">
+      {/* Bottom Control Bar (100dvh safe-area, 44px touch targets, never clips on 360-430px) */}
+      <footer className="shrink-0 bg-white border-t border-slate-200 px-2.5 sm:px-6 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] flex items-center justify-between gap-1.5 overflow-x-auto z-30 shadow-[0_-2px_10px_rgba(15,23,42,0.03)]">
         {/* Left: Audio & Video Controls */}
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
           <button
             type="button"
             onClick={toggleMute}
-            className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+            className={`min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all border ${
               isMuted
                 ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
                 : 'bg-slate-100 text-slate-800 border-slate-200 hover:bg-slate-200/70'
@@ -1299,7 +1300,7 @@ export default function LiveMeetingRoom({
           <button
             type="button"
             onClick={toggleCamera}
-            className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+            className={`min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all border ${
               isCameraOff
                 ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
                 : 'bg-slate-100 text-slate-800 border-slate-200 hover:bg-slate-200/70'
@@ -1320,7 +1321,7 @@ export default function LiveMeetingRoom({
           <button
             type="button"
             onClick={flipCamera}
-            className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200/70 text-slate-700 border border-slate-200 transition-all"
+            className="min-h-[44px] min-w-[44px] p-2 rounded-xl bg-slate-100 hover:bg-slate-200/70 text-slate-700 border border-slate-200 transition-all flex items-center justify-center"
             title={t('Switch Front/Back Camera', 'تبديل الكاميرا')}
           >
             <RefreshCw className="w-4 h-4" />
@@ -1328,11 +1329,11 @@ export default function LiveMeetingRoom({
         </div>
 
         {/* Center: Screen Share, Raise Hand, Vector Reactions, Participants, Chat */}
-        <div className="flex items-center gap-1.5 sm:gap-2 relative">
+        <div className="flex items-center gap-1.5 sm:gap-2 relative flex-shrink-0">
           <button
             type="button"
             onClick={toggleScreenShare}
-            className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+            className={`min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all border ${
               isSharingScreen
                 ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
                 : 'bg-slate-100 hover:bg-slate-200/70 text-slate-700 border-slate-200'
@@ -1354,7 +1355,7 @@ export default function LiveMeetingRoom({
           <button
             type="button"
             onClick={toggleRaiseHand}
-            className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+            className={`min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all border ${
               isHandRaised
                 ? 'bg-amber-100 text-amber-800 border-amber-300'
                 : 'bg-slate-100 hover:bg-slate-200/70 text-slate-700 border-slate-200'
@@ -1372,13 +1373,13 @@ export default function LiveMeetingRoom({
             <button
               type="button"
               onClick={() => setShowReactionsMenu((prev) => !prev)}
-              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200/70 text-slate-700 border border-slate-200 transition-all"
+              className="min-h-[44px] min-w-[44px] p-2 rounded-xl bg-slate-100 hover:bg-slate-200/70 text-slate-700 border border-slate-200 transition-all flex items-center justify-center"
               title={t('Reactions', 'تفاعلات', 'Réactions')}
             >
               <Smile className="w-4 h-4 text-blue-600" />
             </button>
             {showReactionsMenu && (
-              <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-2xl px-2.5 py-2 flex items-center gap-1 shadow-xl z-50">
+              <div className="absolute bottom-14 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-2xl px-2.5 py-2 flex items-center gap-1 shadow-xl z-50">
                 {REACTION_ITEMS.map(({ id, label, Icon, color }) => (
                   <button
                     key={id}
@@ -1388,7 +1389,7 @@ export default function LiveMeetingRoom({
                       controllerRef.current?.sendReaction(id);
                       setShowReactionsMenu(false);
                     }}
-                    className="p-2 rounded-xl hover:bg-slate-100 transition-colors"
+                    className="w-10 h-10 rounded-xl hover:bg-slate-100 transition-colors flex items-center justify-center"
                   >
                     <Icon className={`w-4 h-4 ${color}`} />
                   </button>
@@ -1402,7 +1403,7 @@ export default function LiveMeetingRoom({
             onClick={() =>
               setSidePanel((prev) => (prev === 'participants' ? 'none' : 'participants'))
             }
-            className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+            className={`min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all border ${
               sidePanel === 'participants'
                 ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
                 : 'bg-slate-100 hover:bg-slate-200/70 text-slate-700 border-slate-200'
@@ -1415,7 +1416,7 @@ export default function LiveMeetingRoom({
           <button
             type="button"
             onClick={() => setSidePanel((prev) => (prev === 'chat' ? 'none' : 'chat'))}
-            className={`relative px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+            className={`relative min-h-[44px] min-w-[44px] px-2.5 sm:px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all border ${
               sidePanel === 'chat'
                 ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
                 : 'bg-slate-100 hover:bg-slate-200/70 text-slate-700 border-slate-200'
@@ -1432,12 +1433,12 @@ export default function LiveMeetingRoom({
         </div>
 
         {/* Right: Leave / End Meeting */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           {isTutor && (
             <button
               type="button"
               onClick={handleEndRoomForAll}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold rounded-xl text-xs transition-all"
+              className="hidden sm:flex min-h-[44px] items-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold rounded-xl text-xs transition-all"
               title={t('End session for all participants', 'إنهاء الحصة للجميع')}
             >
               <span>{t('End for All', 'إنهاء للجميع', 'Terminer')}</span>
@@ -1446,10 +1447,10 @@ export default function LiveMeetingRoom({
           <button
             type="button"
             onClick={handleLeaveRoom}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-semibold rounded-xl text-xs transition-all shadow-sm"
+            className="min-h-[44px] flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-semibold rounded-xl text-xs transition-all shadow-sm"
           >
             <PhoneOff className="w-4 h-4" />
-            <span>{t('Leave', 'مغادرة', 'Quitter')}</span>
+            <span className="hidden sm:inline">{t('Leave', 'مغادرة', 'Quitter')}</span>
           </button>
         </div>
       </footer>
