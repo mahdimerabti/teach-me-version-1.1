@@ -37,8 +37,9 @@ export type Tutor = {
   bioAr: string;
   subjects: string[];
   hourlyRate: number;
-  rating: number;
+  rating: number | null;
   reviewCount: number;
+  studentsCount?: number;
   experienceYears: number;
   languages: string[];
   avatarUrl: string;
@@ -46,7 +47,10 @@ export type Tutor = {
   idDocumentUrl?: string;
   id_document_url?: string;
   isOnline: boolean;
-  responseTime: string;
+  isLive?: boolean;
+  activeSessionUrl?: string | null;
+  activeSessionSubject?: string | null;
+  responseTime?: string | null;
   isVerified: boolean;
   category: string;
   levelId: string;
