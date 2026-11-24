@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { makeT } from '../i18n';
 import { Video } from 'lucide-react';
 import { joinLiveSessionRemote } from '../lib/api';
 import { parseTimeToMinutes, type BookedSession } from '../lib/bookingsStore';
@@ -15,7 +16,7 @@ type Props = {
 };
 
 export default function JoinSessionButton({ session, language, onNeedCredits, onJoin }: Props) {
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
   const [now, setNow] = useState(() => Date.now());
   const [joining, setJoining] = useState(false);
 
@@ -55,7 +56,7 @@ export default function JoinSessionButton({ session, language, onNeedCredits, on
         onJoin(fallbackRoom);
         return;
       } else if (res?.error) {
-        alert(t(`Error joining session: ${res.error}`, `خطأ في الانضمام للحصة: ${res.error}`));
+        alert(t(`Error joining session: ${res.error}`, `خطأ في الانضمام للحصة: ${res.error}`, `Erreur de connexion à la session : ${res.error}`));
         return;
       }
 
@@ -104,7 +105,7 @@ export default function JoinSessionButton({ session, language, onNeedCredits, on
         {isLive
           ? t('Join Live Lesson NOW (1 Free Trial Credit)', 'انضم للحصة المباشرة الآن (رصيد تجريبي)', 'Rejoindre le cours en direct')
           : isFuture
-          ? t('Test Live Session & Zoom Room Now', 'تجربة البث المباشر وغرفة زوم الآن', 'Tester la session en direct')
+          ? t('Enter the classroom early', 'الدخول المبكر إلى الحصة', 'Entrer en avance dans la classe')
           : t('Join Live Session', 'انضم للحصة المباشرة', 'Rejoindre la session en direct')}
       </button>
     </div>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { makeT } from '../i18n';
 import {
   Award,
   Camera,
@@ -85,8 +86,7 @@ function VideoStreamTile({
   language: 'en' | 'ar' | 'fr';
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const t = (en: string, ar: string, fr?: string) =>
-    language === 'ar' ? ar : language === 'fr' ? fr || en : en;
+  const t = makeT(language);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -212,8 +212,7 @@ export default function LiveMeetingRoom({
   language,
   onClose
 }: Props) {
-  const t = (en: string, ar: string, fr?: string) =>
-    language === 'ar' ? ar : language === 'fr' ? fr || en : en;
+  const t = makeT(language);
 
   const [localUserId] = useState(
     () => userId || `guest-${Math.random().toString(36).slice(2, 10)}`

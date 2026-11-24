@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { makeT } from '../i18n';
 import {
   ShieldCheck,
   Users,
@@ -27,7 +28,7 @@ interface AdminDashboardProps {
 }
 
 export default function AdminDashboard({ user, onLogout, language, onChangeLanguage }: AdminDashboardProps) {
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
 
   const [tutors, setTutors] = useState<any[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -414,7 +415,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                 </div>
                 <p className="text-xl font-bold text-teal-600 leading-none">100% OK</p>
                 <p className="text-xs sm:text-[10px] text-slate-400 font-semibold mt-1 uppercase tracking-wider truncate">{t('System Health', 'حالة النظام')}</p>
-                <p className="text-xs sm:text-[10px] text-emerald-600 font-bold mt-2 truncate">Database Active</p>
+                <p className="text-xs sm:text-[10px] text-emerald-600 font-bold mt-2 truncate">{t('Database Active', 'قاعدة البيانات تعمل', 'Base de données active')}</p>
               </div>
             </div>
 
@@ -439,7 +440,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                   >
                     <div className="flex items-center gap-3 min-w-0 flex-1">
                       <img
-                        src={tutor.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face'}
+                        src={tutor.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(tutor.name || 'T')}&background=2563EB&color=fff&size=150`}
                         alt={tutor.name}
                         className="w-11 h-11 sm:w-10 sm:h-10 rounded-xl object-cover border border-slate-100 flex-shrink-0"
                       />
@@ -515,7 +516,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                 >
                   <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
                     <img
-                      src={tutor.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face'}
+                      src={tutor.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(tutor.name || 'T')}&background=2563EB&color=fff&size=150`}
                       alt={tutor.name}
                       className="w-12 h-12 sm:w-11 sm:h-11 rounded-xl object-cover border border-slate-100 flex-shrink-0"
                     />
@@ -610,7 +611,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                     <p className="text-xs sm:text-[9px] text-blue-600 font-semibold mt-1">Cost: {session.credit_cost || 1} credits</p>
                   </div>
                   <span className={`self-start sm:self-center text-xs sm:text-[9px] font-bold uppercase px-2.5 sm:px-2 py-1 sm:py-0.5 rounded-full flex-shrink-0 ${
-                    session.status === 'live' ? 'bg-red-100 text-red-700' :
+                    session.status === 'live' ? 'bg-emerald-100 text-emerald-700' :
                     session.status === 'confirmed' ? 'bg-blue-100 text-blue-700' :
                     session.status === 'completed' ? 'bg-green-100 text-green-700' :
                     'bg-red-100 text-red-700'
@@ -700,7 +701,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
             
             <div className="flex items-start gap-3.5 mb-4 border-b border-slate-100 pb-4">
               <img
-                src={selectedTutor.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face'}
+                src={selectedTutor.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedTutor.name || 'T')}&background=2563EB&color=fff&size=150`}
                 alt={selectedTutor.name}
                 className="w-14 h-14 rounded-2xl object-cover border border-slate-100 flex-shrink-0"
               />
@@ -722,7 +723,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                     {selectedTutor.status || 'pending'}
                   </span>
                   {selectedTutor.is_verified && (
-                    <span className="text-[10px] sm:text-[8px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Account Verified</span>
+                    <span className="text-[10px] sm:text-[8px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{t('Account Verified', 'حساب موثّق', 'Compte vérifié')}</span>
                   )}
                   {selectedTutor.identity_verified && (
                     <span className="text-[10px] sm:text-[8px] font-bold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">ID Verified</span>
@@ -743,7 +744,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                   {selectedTutor.subjects && selectedTutor.subjects.length > 0 ? selectedTutor.subjects.map((s: string) => (
                     <span key={s} className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-md text-xs sm:text-[11px] font-medium">{s}</span>
                   )) : (
-                    <span className="text-slate-400 italic text-xs">No subjects listed</span>
+                    <span className="text-slate-400 italic text-xs">{t('No subjects listed', 'لا توجد مواد', 'Aucune matière')}</span>
                   )}
                 </div>
               </div>
@@ -772,7 +773,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                     })}
                   </div>
                 ) : (
-                  <p className="text-slate-400 italic text-xs sm:text-[11px]">No certificates attached</p>
+                  <p className="text-slate-400 italic text-xs sm:text-[11px]">{t('No certificates attached', 'لا توجد شهادات مرفقة', 'Aucun diplôme joint')}</p>
                 )}
               </div>
 

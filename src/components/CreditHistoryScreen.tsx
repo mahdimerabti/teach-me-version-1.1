@@ -1,4 +1,5 @@
 import { ArrowLeft, Clock, Gift, RotateCcw, ShoppingBag, UserPlus, Video, Wallet } from 'lucide-react';
+import { makeT } from '../i18n';
 import { useCreditBalance, useCreditHistory, type CreditEntryType } from '../lib/credits';
 
 type Props = {
@@ -25,7 +26,7 @@ const STYLES: Record<CreditEntryType, { text: string; bg: string }> = {
 };
 
 export default function CreditHistoryScreen({ language, onBack }: Props) {
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
   const history = useCreditHistory();
   const balance = useCreditBalance();
 

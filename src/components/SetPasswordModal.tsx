@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { makeT } from '../i18n';
 import { KeyRound, Eye, EyeOff, Loader2, CheckCircle, AlertTriangle, X } from 'lucide-react';
 import { supabase, authLog } from '../lib/supabase';
 
@@ -26,7 +27,7 @@ export default function SetPasswordModal({
 
   if (!isOpen) return null;
 
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
 
   const handleSetPassword = async (e: React.FormEvent) => {
     e.preventDefault();

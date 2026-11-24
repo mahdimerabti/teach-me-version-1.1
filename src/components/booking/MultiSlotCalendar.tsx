@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { makeT } from '../../i18n';
 import { CalendarClock, X } from 'lucide-react';
 import type { ScheduleSlot } from '../../lib/db';
 import {
@@ -50,7 +51,7 @@ export default function MultiSlotCalendar({
   bookedSessions,
   tutorId,
 }: Props) {
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
 
   const effectiveSchedule = useMemo(() => {
     if (schedule && schedule.length > 0) return schedule;

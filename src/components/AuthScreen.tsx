@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { makeT } from '../i18n';
 import { Eye, EyeOff, User, GraduationCap, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import { supabase, authLog } from '../lib/supabase';
 import { isAndroidNative, performAndroidGoogleSignIn, getSafeRedirectUrl, checkGoogleProviderEnabled } from '../lib/androidAuth';
@@ -22,7 +23,7 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
   const [successInfo, setSuccessInfo] = useState('');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
 
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
 
   useEffect(() => {
     if (initialBanner?.message) {

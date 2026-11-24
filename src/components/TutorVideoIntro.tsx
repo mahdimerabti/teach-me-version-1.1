@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { makeT } from '../i18n';
 import { Play, VideoOff } from 'lucide-react';
 
 type Props = {
@@ -8,7 +9,7 @@ type Props = {
 };
 
 export default function TutorVideoIntro({ videoUrl, tutorName, language }: Props) {
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState(false);
 

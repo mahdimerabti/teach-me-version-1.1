@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { makeT } from '../i18n';
 import { ArrowLeft, Upload, Plus, Trash2, Clock, CheckCircle, Video, BookOpen, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { CURRENCY_CODE } from '../lib/config';
@@ -101,11 +102,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
   const certFileInputRef = useRef<HTMLInputElement>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
  
-  const t = (en: string, ar: string, fr?: string) => {
-    if (language === 'ar') return ar;
-    if (language === 'fr') return fr || en;
-    return en;
-  };
+  const t = makeT(language);
  
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -194,7 +191,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
           });
         if (uploadError) {
           console.error('Avatar upload error:', uploadError);
-          throw new Error(t(`Avatar upload failed: ${uploadError.message}`, `فشل تحميل الصورة الشخصية: ${uploadError.message}`));
+          throw new Error(t(`Avatar upload failed: ${uploadError.message}`, `فشل تحميل الصورة الشخصية: ${uploadError.message}`, `Échec de l'envoi de la photo : ${uploadError.message}`));
         }
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
@@ -213,7 +210,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
           });
         if (idUploadError) {
           console.error('ID upload error:', idUploadError);
-          throw new Error(t(`ID document upload failed: ${idUploadError.message}`, `فشل تحميل وثيقة الهوية: ${idUploadError.message}`));
+          throw new Error(t(`ID document upload failed: ${idUploadError.message}`, `فشل تحميل وثيقة الهوية: ${idUploadError.message}`, `Échec de l'envoi de la pièce d'identité : ${idUploadError.message}`));
         }
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
@@ -235,7 +232,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
             });
           if (certUploadError) {
             console.error('Cert upload error:', certUploadError);
-            throw new Error(t(`Certificate upload failed: ${certUploadError.message}`, `فشل تحميل الشهادة: ${certUploadError.message}`));
+            throw new Error(t(`Certificate upload failed: ${certUploadError.message}`, `فشل تحميل الشهادة: ${certUploadError.message}`, `Échec de l'envoi du diplôme : ${certUploadError.message}`));
           }
           const { data: { publicUrl } } = supabase.storage
             .from('avatars')
@@ -277,7 +274,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
         <div>
-          <h1 className="font-bold text-gray-900">Tutor Registration</h1>
+          <h1 className="font-bold text-gray-900">{t('Tutor Registration', 'التسجيل كأستاذ', 'Inscription enseignant')}</h1>
           <p className="text-xs text-gray-500">Step {step + 1} of {STEP_TITLES.length}: {STEP_TITLES[step]}</p>
         </div>
       </div>
@@ -304,7 +301,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
           <div className="animate-slide-up space-y-4">
             <div className="bg-blue-50 rounded-2xl p-4 flex items-start gap-3">
               <BookOpen className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-              <p className="text-sm text-blue-700">Fill in your profile details. Students will see this information when choosing their tutor.</p>
+              <p className="text-sm text-blue-700">{t('Fill in your profile details. Students will see this information when choosing their tutor.', 'أكمل بيانات ملفك. سيرى الطلاب هذه المعلومات عند اختيار أستاذهم.', 'Complétez votre profil. Les élèves verront ces informations au moment de choisir leur enseignant.')}</p>
             </div>
 
             <div className="bg-white rounded-2xl p-4 shadow-sm">
@@ -913,7 +910,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
  
             {profile.meetingSettings && (
               <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
-                <h4 className="font-semibold text-gray-800 text-sm mb-3">Meeting Settings</h4>
+                <h4 className="font-semibold text-gray-800 text-sm mb-3">{t('Meeting Settings', 'إعدادات الحصص', 'Paramètres des cours')}</h4>
                 <ul className="text-xs text-gray-500 space-y-1">
                   <li>• Mute Microphone on Join: {profile.meetingSettings.muteOnJoin ? 'Yes' : 'No'}</li>
                   <li>• Video Muted on Join: {profile.meetingSettings.videoOnJoin ? 'Yes' : 'No'}</li>
@@ -939,8 +936,8 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
               <div className="bg-green-50 rounded-2xl p-4 flex items-center gap-3">
                 <CheckCircle className="w-5 h-5 text-green-500" />
                 <div>
-                  <p className="text-sm font-semibold text-green-800">Identity Verified ✓</p>
-                  <p className="text-xs text-green-600 mt-0.5">Mock ID successfully attached.</p>
+                  <p className="text-sm font-semibold text-green-800">{t('Identity verified', 'تم التحقق من الهوية', 'Identité vérifiée')}</p>
+                  <p className="text-xs text-green-600 mt-0.5">{t('ID document attached.', 'تم إرفاق وثيقة الهوية.', "Pièce d'identité jointe.")}</p>
                 </div>
               </div>
             )}
@@ -949,7 +946,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
               <div className="bg-green-50 rounded-2xl p-4 flex items-center gap-3">
                 <CheckCircle className="w-5 h-5 text-green-500" />
                 <div>
-                  <p className="text-sm font-semibold text-green-800">Intro Video Added ✓</p>
+                  <p className="text-sm font-semibold text-green-800">{t('Intro video added', 'تمت إضافة الفيديو التعريفي', 'Vidéo de présentation ajoutée')}</p>
                   <p className="text-xs text-green-600 mt-0.5">Your profile will stand out!</p>
                 </div>
               </div>
