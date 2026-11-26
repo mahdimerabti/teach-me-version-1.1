@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { redactSensitiveText } from './security';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://priqushrcnedrtkpmbzu.supabase.co';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_1eYu1ny3h-eTvmtT6WSwOA_hDfO_vyo';
@@ -12,8 +13,17 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 });
 
-export const authLog = (message: string, ...details: any[]) => {
-  console.log(`[Auth Flow] ${message}`, details.length ? details : '');
+export const authLog = (message: string, ...details: unknown[]) => {
+  if (!import.meta.env.DEV) return;
+  const safeMessage = redactSensitiveText(String(message));
+  if (details.length > 0) {
+    const safeDetails = details.map((d) =>
+      typeof d === 'string' ? redactSensitiveText(d) : d
+    );
+    console.debug(`[Auth Flow] ${safeMessage}`, safeDetails);
+  } else {
+    console.debug(`[Auth Flow] ${safeMessage}`);
+  }
 };
 
 export type Database = {

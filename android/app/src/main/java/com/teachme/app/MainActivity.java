@@ -38,6 +38,8 @@ public class MainActivity extends BridgeActivity {
                 settings.setJavaScriptEnabled(true);
                 settings.setDomStorageEnabled(true);
                 settings.setAllowFileAccess(true);
+                settings.setAllowFileAccessFromFileURLs(false);
+                settings.setAllowUniversalAccessFromFileURLs(false);
                 settings.setMediaPlaybackRequiresUserGesture(false);
 
                 // Use clean Mobile Chrome User-Agent so Google OAuth never rejects with 403 disallowed_useragent
@@ -150,10 +152,48 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
+    private boolean isTrustedMediaOrigin(Uri origin) {
+        if (origin == null) return false;
+        String scheme = origin.getScheme();
+        String host = origin.getHost();
+        if ("file".equalsIgnoreCase(scheme)) return true;
+        if (!"https".equalsIgnoreCase(scheme)) return false;
+        if (host == null) return false;
+        String lowerHost = host.toLowerCase();
+        return "localhost".equals(lowerHost)
+                || "teachmelearn.netlify.app".equals(lowerHost)
+                || "meet.jit.si".equals(lowerHost)
+                || lowerHost.endsWith(".jit.si");
+    }
+
+    private String[] filterAllowedMediaResources(String[] requested) {
+        List<String> safe = new ArrayList<>();
+        if (requested != null) {
+            for (String r : requested) {
+                if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)
+                        || PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) {
+                    safe.add(r);
+                }
+            }
+        }
+        return safe.toArray(new String[0]);
+    }
+
     private void handleWebViewPermissionRequest(final PermissionRequest request) {
+        if (!isTrustedMediaOrigin(request.getOrigin())) {
+            request.deny();
+            return;
+        }
+
+        String[] allowedResources = filterAllowedMediaResources(request.getResources());
+        if (allowedResources.length == 0) {
+            request.deny();
+            return;
+        }
+
         List<String> missingPermissions = new ArrayList<>();
 
-        for (String resource : request.getResources()) {
+        for (String resource : allowedResources) {
             if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                         != PackageManager.PERMISSION_GRANTED) {
@@ -168,7 +208,7 @@ public class MainActivity extends BridgeActivity {
         }
 
         if (missingPermissions.isEmpty()) {
-            request.grant(request.getResources());
+            request.grant(allowedResources);
         } else {
             this.pendingWebPermissionRequest = request;
             ActivityCompat.requestPermissions(
@@ -202,7 +242,12 @@ public class MainActivity extends BridgeActivity {
             if (anyGranted
                     || ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
                     || ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                runOnUiThread(() -> req.grant(req.getResources()));
+                final String[] safeResources = filterAllowedMediaResources(req.getResources());
+                if (safeResources.length > 0) {
+                    runOnUiThread(() -> req.grant(safeResources));
+                } else {
+                    runOnUiThread(req::deny);
+                }
             } else {
                 runOnUiThread(req::deny);
             }

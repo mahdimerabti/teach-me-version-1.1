@@ -21,6 +21,7 @@ import { addSessionsRemote, useBookedSessions, convertDbTimeToFrontend, type Boo
 import { claimFreeTrialCredits, spendTrialCreditForLiveJoin } from '../lib/credits';
 import { FREE_TRIAL_INITIAL_CREDITS, PAID_PLANS_ENABLED } from '../lib/config';
 import { supabase } from '../lib/supabase';
+import { sanitizeExternalUrl, isValidUuid } from '../lib/security';
 import {
   enableWebPushNotifications,
   getPushStatus,
@@ -220,9 +221,10 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
       }
 
       const target = tutor.activeSessionUrl.trim();
-      if (/^https?:\/\//i.test(target)) {
-        window.open(target, '_blank', 'noopener,noreferrer');
-      } else {
+      const safeExternal = sanitizeExternalUrl(target);
+      if (safeExternal) {
+        window.open(safeExternal, '_blank', 'noopener,noreferrer');
+      } else if (/^[A-Za-z0-9_-]{3,100}$/.test(target)) {
         setLiveRoomId(target);
         nav('meeting');
       }
@@ -567,9 +569,10 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     setLiveToast(null);
     if (n.room_id) {
       const target = n.room_id.trim();
-      if (/^https?:\/\//i.test(target)) {
-        window.open(target, '_blank', 'noopener,noreferrer');
-      } else {
+      const safeExternal = sanitizeExternalUrl(target);
+      if (safeExternal) {
+        window.open(safeExternal, '_blank', 'noopener,noreferrer');
+      } else if (/^[A-Za-z0-9_-]{3,100}$/.test(target)) {
         setLiveRoomId(target);
         nav('meeting');
       }
@@ -874,32 +877,19 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     localStorage.setItem('tm_session_reviews', JSON.stringify(next));
 
     const sess = bookedSessions.find(s => s.id === reviewTarget.id);
-    const targetName = sess?.tutorName || reviewTarget.tutor;
+    const resolvedTutorId = sess?.tutorId;
 
-    if (targetName) {
+    if (resolvedTutorId && isValidUuid(resolvedTutorId) && isValidUuid(user.id)) {
       try {
-        const { data: tutorData } = await supabase
-          .from('tutors')
-          .select('id, rating, review_count')
-          .or(`name.eq."${targetName}",name_ar.eq."${targetName}"`)
-          .maybeSingle();
-
-        if (tutorData) {
-          const currentRating = Number(tutorData.rating || 4.8);
-          const currentCount = Number(tutorData.review_count || 1);
-          const newCount = currentCount + 1;
-          const newRating = Number(((currentRating * currentCount + reviewStars) / newCount).toFixed(1));
-
-          await supabase
-            .from('tutors')
-            .update({
-              rating: newRating,
-              review_count: newCount
-            })
-            .eq('id', tutorData.id);
-        }
-      } catch (err) {
-        console.error('Error saving review to database:', err);
+        await supabase.from('reviews').insert({
+          tutor_id: resolvedTutorId,
+          student_id: user.id,
+          session_id: isValidUuid(reviewTarget.id) ? reviewTarget.id : null,
+          rating: Math.max(1, Math.min(5, Math.round(reviewStars))),
+          comment: reviewMessage.trim().slice(0, 1000)
+        });
+      } catch (_err) {
+        // Trigger recomputes aggregate rating server-side; ignore duplicate session review
       }
     }
 

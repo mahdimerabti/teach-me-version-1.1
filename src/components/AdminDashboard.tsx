@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { CURRENCY_CODE } from '../lib/config';
+import { sanitizeExternalUrl } from '../lib/security';
 
 interface AdminDashboardProps {
   user: { name: string; email: string; id: string };
@@ -758,11 +759,11 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                     {selectedTutor.certificates.map((c: string, idx: number) => {
                       const parts = c.split('|');
                       const title = parts[0];
-                      const url = parts[1];
-                      return url ? (
+                      const safeCertUrl = sanitizeExternalUrl(parts[1]);
+                      return safeCertUrl ? (
                         <a
                           key={idx}
-                          href={url}
+                          href={safeCertUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 px-3 sm:px-2.5 py-2 sm:py-1 rounded-xl sm:rounded-lg text-xs sm:text-[11px] font-semibold border border-blue-100 transition-colors break-all"
@@ -784,14 +785,34 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                   <h4 className="font-bold text-emerald-800 mb-2 flex items-center gap-1.5 text-xs">
                     <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Government ID Document', 'وثيقة الهوية الرسمية')}
                   </h4>
-                  <a
-                    href={selectedTutor.id_document_url || selectedTutor.identity_document_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const rawDoc = String(selectedTutor.id_document_url || selectedTutor.identity_document_url || '').trim();
+                      if (rawDoc.startsWith('id-documents:')) {
+                        const objectPath = rawDoc.slice('id-documents:'.length);
+                        const { data, error: signErr } = await supabase.storage
+                          .from('id-documents')
+                          .createSignedUrl(objectPath, 120);
+                        const signedSafe = sanitizeExternalUrl(data?.signedUrl);
+                        if (!signErr && signedSafe) {
+                          window.open(signedSafe, '_blank', 'noopener,noreferrer');
+                        } else {
+                          alert(t('Unable to generate secure document preview link.', 'تعذر إنشاء رابط آمن لمعاينة الوثيقة.'));
+                        }
+                        return;
+                      }
+                      const safeDocUrl = sanitizeExternalUrl(rawDoc);
+                      if (safeDocUrl) {
+                        window.open(safeDocUrl, '_blank', 'noopener,noreferrer');
+                      } else {
+                        alert(t('Blocked unsafe document URL.', 'تم حظر رابط وثيقة غير آمن.'));
+                      }
+                    }}
                     className="min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2.5 sm:py-1.5 rounded-xl font-bold text-xs shadow-sm transition-all"
                   >
                     <FileText className="w-4 h-4 shrink-0" /> {t('View Uploaded Identity Document', 'فتح معينة وثيقة الهوية')}
-                  </a>
+                  </button>
                 </div>
               )}
             </div>

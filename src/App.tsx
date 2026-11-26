@@ -26,27 +26,23 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isSetPasswordOpen, setIsSetPasswordOpen] = useState(false);
   const [tutorProfile, setTutorProfile] = useState<TutorProfile | null>(null);
-  const [tutorRegistered, setTutorRegistered] = useState(false);
-  const [language, setLanguage] = useState<'en' | 'ar' | 'fr'>(() =>
-    (localStorage.getItem('tm_lang') as 'en' | 'ar' | 'fr') || 'en'
-  );
+  const [language, setLanguage] = useState<'en' | 'ar' | 'fr'>(() => {
+    const stored = localStorage.getItem('tm_lang');
+    return stored === 'ar' || stored === 'fr' ? stored : 'en';
+  });
 
   const [initialAuthBanner, setInitialAuthBanner] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
-    const fromQuery = new URLSearchParams(window.location.search).get('room');
-    if (fromQuery) {
-      sessionStorage.setItem('tm_pending_room_id', fromQuery);
-      return fromQuery;
+    const rawRoom = new URLSearchParams(window.location.search).get('room');
+    const cleanRoom = rawRoom && /^[A-Za-z0-9_-]{3,100}$/.test(rawRoom.trim()) ? rawRoom.trim() : null;
+    if (cleanRoom) {
+      sessionStorage.setItem('tm_pending_room_id', cleanRoom);
+      return cleanRoom;
     }
-    return sessionStorage.getItem('tm_pending_room_id');
+    const cached = sessionStorage.getItem('tm_pending_room_id');
+    return cached && /^[A-Za-z0-9_-]{3,100}$/.test(cached) ? cached : null;
   });
-
-  const isAdminEmail = (email?: string | null) => {
-    const normalized = (email || '').trim().toLowerCase();
-    const envAdmin = (import.meta.env.VITE_ADMIN_EMAIL || 'admin@demo.com').trim().toLowerCase();
-    return normalized === envAdmin || normalized === 'admin@teachme.dz';
-  };
 
   const isTutorProfileComplete = (tutor: any) =>
     Boolean(
@@ -220,7 +216,6 @@ export default function App() {
         if (isMounted) {
           setUser(null);
           setTutorProfile(null);
-          setTutorRegistered(false);
           setAppState('auth');
           setIsAuthLoading(false);
           clearTimeout(loadingTimeout);
@@ -357,9 +352,9 @@ export default function App() {
       profile = profData;
       tutorRow = tutData;
 
-      // Determine authoritative role without demoting existing admins or tutors
+      // Determine authoritative role strictly from server profile / tutor records (never client email matching)
       let resolvedRole: 'student' | 'tutor' | 'admin';
-      if (isAdminEmail(authUser.email) || profile?.role === 'admin') {
+      if (profile?.role === 'admin') {
         resolvedRole = 'admin';
       } else if (tutorRow?.id || profile?.role === 'tutor') {
         resolvedRole = 'tutor';
@@ -438,11 +433,9 @@ export default function App() {
       } else {
         if (isTutorProfileComplete(tutorRow)) {
           localStorage.setItem(`tm_tutor_reg_${authUser.id}`, 'true');
-          setTutorRegistered(true);
           setTutorProfile(mapDbTutorToProfile(tutorRow));
           setAppState('tutor-dashboard');
         } else {
-          setTutorRegistered(false);
           if (tutorRow) setTutorProfile(mapDbTutorToProfile(tutorRow));
           setAppState('tutor-register');
         }
@@ -452,15 +445,14 @@ export default function App() {
       requestNotificationPermission().catch(() => {});
     } catch (err: any) {
       authLog(`handleSessionUser unexpected error: ${err?.message || err}`);
-      const fallbackRole: 'student' | 'tutor' | 'admin' = isAdminEmail(authUser.email) ? 'admin' : 'student';
       const fallbackUser: User = {
         id: authUser.id,
         name: defaultName,
         email: authUser.email || '',
-        role: fallbackRole
+        role: 'student'
       };
       setUser(fallbackUser);
-      setAppState(fallbackRole === 'admin' ? 'admin-dashboard' : 'student-app');
+      setAppState('student-app');
     } finally {
       setIsAuthLoading(false);
     }
@@ -493,10 +485,8 @@ export default function App() {
 
         if (isTutorProfileComplete(tutor)) {
           localStorage.setItem(`tm_tutor_reg_${u.id}`, 'true');
-          setTutorRegistered(true);
           setAppState('tutor-dashboard');
         } else {
-          setTutorRegistered(false);
           setAppState('tutor-register');
         }
         return;
@@ -508,7 +498,6 @@ export default function App() {
     if (u.role === 'student') {
       setAppState('student-app');
     } else {
-      setTutorRegistered(false);
       setAppState('tutor-register');
     }
   };
@@ -614,7 +603,6 @@ export default function App() {
 
     // 5. Update application state
     setTutorProfile(profile);
-    setTutorRegistered(true);
     setAppState('tutor-dashboard');
   };
 
@@ -624,9 +612,8 @@ export default function App() {
     sessionStorage.clear();
     setUser(null);
     setTutorProfile(null);
-    setTutorRegistered(false);
     setAppState('auth');
-    supabase.auth.signOut().catch((err) => console.error('Sign out error:', err));
+    supabase.auth.signOut().catch(() => {});
   };
 
 

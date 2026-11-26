@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { makeT } from '../i18n';
 import { Eye, EyeOff, User, GraduationCap, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import { supabase, authLog } from '../lib/supabase';
 import { isAndroidNative, performAndroidGoogleSignIn, getSafeRedirectUrl, checkGoogleProviderEnabled } from '../lib/androidAuth';
+import { validatePasswordStrength } from '../lib/security';
 
 type Role = 'student' | 'tutor' | 'admin';
 type AuthMode = 'login' | 'register' | 'forgot';
@@ -22,6 +23,8 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
   const [error, setError] = useState('');
   const [successInfo, setSuccessInfo] = useState('');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const failedAttemptsRef = useRef<number>(0);
+  const lockoutUntilRef = useRef<number>(0);
 
   const t = makeT(language);
 
@@ -73,11 +76,36 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
       setError(t('Please fill all fields', 'يرجى ملء جميع الحقول')); 
       return; 
     }
+    if (Date.now() < lockoutUntilRef.current) {
+      const waitSec = Math.ceil((lockoutUntilRef.current - Date.now()) / 1000);
+      setError(
+        t(
+          `Too many failed attempts. Please wait ${waitSec}s before trying again.`,
+          `محاولات فاشلة كثيرة. يرجى الانتظار ${waitSec} ثانية قبل المحاولة مجدداً.`,
+          `Trop de tentatives échouées. Veuillez patienter ${waitSec}s.`
+        )
+      );
+      return;
+    }
     if (mode === 'register' && !form.name.trim()) { 
       setError(t('Please enter your name', 'يرجى إدخال اسمك')); 
       return; 
     }
-    if (inputPassword.length < 6) {
+    if (mode === 'register') {
+      const strength = validatePasswordStrength(form.password);
+      if (!strength.valid) {
+        setError(
+          strength.reason === 'long'
+            ? t('Password must not exceed 128 characters', 'كلمة المرور يجب ألا تتجاوز 128 حرفاً')
+            : t(
+                'Password must be at least 8 characters and include letters and numbers',
+                'كلمة المرور يجب أن تتكون من 8 أحرف على الأقل وتحتوي على حروف وأرقام',
+                'Le mot de passe doit contenir au moins 8 caractères (lettres et chiffres)'
+              )
+        );
+        return;
+      }
+    } else if (inputPassword.length < 6 || inputPassword.length > 128) {
       setError(t('Password must be at least 6 characters long', 'كلمة المرور يجب أن تكون 6 أحرف على الأقل'));
       return;
     }
@@ -85,11 +113,11 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
     setLoading(true);
     try {
       if (mode === 'register') {
-        let createdRole = role;
+        const createdRole: 'student' | 'tutor' = role === 'tutor' ? 'tutor' : 'student';
 
         setSuccessInfo('');
 
-        const defaultName = form.name.trim() || trimmedEmail.split('@')[0];
+        const defaultName = (form.name.trim() || trimmedEmail.split('@')[0]).slice(0, 100);
         let userId = '';
 
         let activeSession: any = null;
@@ -232,13 +260,9 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         setLoading(false);
         return;
       } else {
-        // Automatic Administrator Detection by Admin Role or Admin Credentials
-        const adminEmail = (import.meta.env.VITE_ADMIN_EMAIL || 'admin@demo.com').trim().toLowerCase();
-
-        const isExactAdminEmail = trimmedEmail.toLowerCase() === adminEmail || trimmedEmail.toLowerCase() === 'admin@teachme.dz';
         const isRoleAdmin = role === 'admin';
 
-        if (isRoleAdmin || isExactAdminEmail) {
+        if (isRoleAdmin) {
           const withTimeout = <T,>(p: PromiseLike<T>, ms = 10000): Promise<T> =>
             Promise.race([
               Promise.resolve(p),
@@ -271,8 +295,8 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           const adminId = authData.user.id;
           const adminFullName = authData.user.user_metadata?.full_name || 'System Administrator';
 
-          // Verify profile role (bounded by timeout so login can never hang)
-          let verifiedRole: Role = isExactAdminEmail ? 'admin' : 'student';
+          // Server-authoritative role verification from public.profiles (never trust client email matching)
+          let verifiedRole: Role = 'student';
           try {
             const { data: prof } = await withTimeout(
               supabase
@@ -284,23 +308,11 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
             );
             if (prof?.role === 'admin') {
               verifiedRole = 'admin';
-            } else if (isExactAdminEmail) {
-              await withTimeout(
-                supabase.from('profiles').upsert(
-                  {
-                    user_id: adminId,
-                    full_name: prof?.full_name || adminFullName,
-                    role: 'admin'
-                  },
-                  { onConflict: 'user_id' }
-                ),
-                4000
-              );
-              verifiedRole = 'admin';
             }
           } catch (_) {}
 
           if (verifiedRole !== 'admin') {
+            await supabase.auth.signOut().catch(() => {});
             throw new Error(
               t(
                 'This account does not have administrator privileges.',
@@ -309,6 +321,7 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
             );
           }
 
+          failedAttemptsRef.current = 0;
           const adminUser = {
             name: adminFullName,
             email: authData.user.email || trimmedEmail,
@@ -338,27 +351,32 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
             .eq('user_id', data.user.id)
             .maybeSingle();
           profile = profData;
-        } catch (e) {
+        } catch (_e) {
           // Non-blocking profile fetch fallback
         }
 
-        const userRole = (profile?.role as Role) || (data.user.user_metadata?.role as Role) || role;
+        const safeFallbackRole: Role = role === 'tutor' ? 'tutor' : 'student';
+        const metaRole = data.user.user_metadata?.role;
+        const resolvedFallbackRole: Role =
+          metaRole === 'tutor' || metaRole === 'student' ? metaRole : safeFallbackRole;
+        const userRole: Role = (profile?.role as Role) || resolvedFallbackRole;
 
         if (!profile) {
-          const defaultName = data.user.user_metadata?.full_name || trimmedEmail.split('@')[0];
+          const defaultName = (data.user.user_metadata?.full_name || trimmedEmail.split('@')[0]).slice(0, 100);
           try {
             await supabase.from('profiles').upsert(
               {
                 user_id: data.user.id,
                 full_name: defaultName,
-                role: userRole
+                role: userRole === 'admin' ? 'student' : userRole
               },
               { onConflict: 'user_id' }
             );
           } catch (_) {}
-          profile = { full_name: defaultName, role: userRole };
+          profile = { full_name: defaultName, role: userRole === 'admin' ? 'student' : userRole };
         }
 
+        failedAttemptsRef.current = 0;
         const authenticatedUser = {
           name: profile.full_name,
           email: trimmedEmail,
@@ -369,6 +387,12 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         onAuth(authenticatedUser);
       }
     } catch (err: any) {
+      failedAttemptsRef.current += 1;
+      if (failedAttemptsRef.current >= 5) {
+        lockoutUntilRef.current = Date.now() + 30_000;
+        failedAttemptsRef.current = 0;
+      }
+
       let msg = err.message || t('Authentication failed', 'فشل عملية المصادقة', 'Échec de l\'authentification');
       
       if (err.message === 'Invalid login credentials') {
@@ -384,19 +408,11 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           'Veuillez confirmer votre adresse e-mail.'
         );
       } else if (err.message?.toLowerCase().includes('failed to fetch') || err.name === 'TypeError') {
-        // Network connection or fetch failure fallback: allow instant local session login so user is never locked out
-        authLog('Network fetch failed, attempting local authentication session fallback');
-        const fallbackName = form.name.trim() || trimmedEmail.split('@')[0] || 'User';
-        const fallbackUser = {
-          name: fallbackName,
-          email: trimmedEmail,
-          role: role,
-          id: `usr-offline-${Date.now()}`
-        };
-        localStorage.setItem('tm_user_session', JSON.stringify(fallbackUser));
-        onAuth(fallbackUser);
-        setLoading(false);
-        return;
+        msg = t(
+          'Unable to connect to the authentication server. Please check your internet connection and try again.',
+          'تعذر الاتصال بخادم المصادقة. يرجى التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى.',
+          'Impossible de joindre le serveur d\'authentification. Vérifiez votre connexion Internet.'
+        );
       }
       setError(msg);
     } finally {

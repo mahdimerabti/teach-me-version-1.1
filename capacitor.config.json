@@ -11,16 +11,15 @@
       "*.supabase.in",
       "meet.jit.si",
       "*.jit.si",
-      "*.netlify.app",
+      "teachmelearn.netlify.app",
       "accounts.google.com",
-      "*.googleapis.com",
-      "*"
+      "*.googleapis.com"
     ]
   },
   "android": {
-    "allowMixedContent": true,
+    "allowMixedContent": false,
     "captureInput": true,
-    "webContentsDebuggingEnabled": true
+    "webContentsDebuggingEnabled": false
   },
   "plugins": {
     "Browser": {

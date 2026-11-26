@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { makeT } from '../i18n';
 import { Play, VideoOff } from 'lucide-react';
+import { sanitizeMediaUrl } from '../lib/security';
 
 type Props = {
   videoUrl?: string;
@@ -13,7 +14,8 @@ export default function TutorVideoIntro({ videoUrl, tutorName, language }: Props
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState(false);
 
-  if (!videoUrl) return null;
+  const safeVideoUrl = sanitizeMediaUrl(videoUrl);
+  if (!safeVideoUrl) return null;
 
   return (
     <div>
@@ -37,7 +39,7 @@ export default function TutorVideoIntro({ videoUrl, tutorName, language }: Props
           </div>
         ) : playing ? (
           <video
-            src={videoUrl}
+            src={safeVideoUrl}
             className="absolute inset-0 w-full h-full object-contain"
             controls
             autoPlay

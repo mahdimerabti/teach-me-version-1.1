@@ -12,6 +12,7 @@ import LiveMeetingRoom from './LiveMeetingRoom';
 import { supabase } from '../lib/supabase';
 import { dayToNumber } from './booking/MultiSlotCalendar';
 import { CURRENCY_CODE } from '../lib/config';
+import { getSafeUploadExtension } from '../lib/security';
 import {
   fetchUserConversations,
   fetchMessages,
@@ -115,17 +116,18 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
       alert(t('File size exceeds 5MB', 'حجم الملف يتجاوز 5 ميغابايت', 'La taille dépasse 5 Mo'));
       return;
     }
-    if (!file.type.startsWith('image/')) {
-      alert(t('Only image files are allowed', 'يسمح بملفات الصور فقط', 'Seules les images sont autorisées'));
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowedMimes.includes(file.type)) {
+      alert(t('Only JPG, PNG, WEBP, or GIF images are allowed', 'يسمح بملفات الصور (JPG, PNG, WEBP, GIF) فقط', 'Seules les images JPG, PNG, WEBP ou GIF sont autorisées'));
       return;
     }
     setAvatarUploading(true);
     try {
-      const fileExt = file.name.split('.').pop() || 'jpg';
-      const filePath = `avatar-${user.id}-${Date.now()}.${fileExt}`;
+      const fileExt = getSafeUploadExtension(file.name, ['jpg', 'jpeg', 'png', 'webp', 'gif'], 'jpg');
+      const filePath = `${user.id}/avatar-${Date.now()}.${fileExt}`;
       const { error: uploadErr } = await supabase.storage
         .from('avatars')
-        .upload(filePath, file, { cacheControl: '3600', upsert: true });
+        .upload(filePath, file, { cacheControl: '3600', contentType: file.type, upsert: true });
       if (uploadErr) throw uploadErr;
       const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(filePath);
       setEditAvatarUrl(publicUrl);
