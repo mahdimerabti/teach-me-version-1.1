@@ -15,7 +15,9 @@ import {
   ChevronRight,
   CreditCard,
   X,
-  AlertTriangle
+  AlertTriangle,
+  GraduationCap,
+  FileText
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { CURRENCY_CODE } from '../lib/config';
@@ -765,7 +767,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                           rel="noopener noreferrer"
                           className="min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 px-3 sm:px-2.5 py-2 sm:py-1 rounded-xl sm:rounded-lg text-xs sm:text-[11px] font-semibold border border-blue-100 transition-colors break-all"
                         >
-                          🎓 {title} <span className="text-[10px] underline">({t('View', 'عرض')})</span>
+                          <GraduationCap className="w-3.5 h-3.5 shrink-0" /> {title} <span className="text-[10px] underline">({t('View', 'عرض')})</span>
                         </a>
                       ) : (
                         <span key={idx} className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md text-xs sm:text-[11px] font-semibold border border-blue-100">{title}</span>
@@ -780,7 +782,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
               {(selectedTutor.id_document_url || selectedTutor.identity_document_url) && (
                 <div className="bg-emerald-50/70 rounded-2xl p-3 border border-emerald-100">
                   <h4 className="font-bold text-emerald-800 mb-2 flex items-center gap-1.5 text-xs">
-                    🛡️ {t('Government ID Document', 'وثيقة الهوية الرسمية')}
+                    <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Government ID Document', 'وثيقة الهوية الرسمية')}
                   </h4>
                   <a
                     href={selectedTutor.id_document_url || selectedTutor.identity_document_url}
@@ -788,7 +790,7 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                     rel="noopener noreferrer"
                     className="min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2.5 sm:py-1.5 rounded-xl font-bold text-xs shadow-sm transition-all"
                   >
-                    📄 {t('View Uploaded Identity Document', 'فتح معينة وثيقة الهوية')}
+                    <FileText className="w-4 h-4 shrink-0" /> {t('View Uploaded Identity Document', 'فتح معينة وثيقة الهوية')}
                   </a>
                 </div>
               )}

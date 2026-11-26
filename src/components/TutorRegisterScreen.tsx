@@ -655,7 +655,10 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
             )}
  
             <div className="bg-amber-50 rounded-2xl p-4 text-left">
-              <h4 className="text-sm font-semibold text-amber-800 mb-2">{t('📹 Video Tips', '📹 نصائح لتصوير الفيديو', '📹 Conseils pour la vidéo')}</h4>
+              <h4 className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-1.5">
+                <Video className="w-4 h-4 shrink-0" />
+                <span>{t('Video Tips', 'نصائح لتصوير الفيديو', 'Conseils pour la vidéo')}</span>
+              </h4>
               <ul className="text-xs text-amber-700 space-y-1.5">
                 <li>• Show your enthusiasm for the subject</li>
                 <li>• Keep it between 60–120 seconds</li>
