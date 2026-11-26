@@ -7,6 +7,7 @@ import webpush from 'npm:web-push@3.6.7';
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://teachmelearn.netlify.app',
+  'https://teach-me-app-one.vercel.app',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'https://localhost',

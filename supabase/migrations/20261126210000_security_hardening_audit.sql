@@ -276,6 +276,9 @@ $$;
 --    - Verify approved tutor status before granting 'host' role in a room
 --    - Restrict room, participant, and room_messages access to room members / admins
 -- ------------------------------------------------------------------------------
+alter table public.rooms
+  add column if not exists allowed_drawers uuid[] not null default '{}'::uuid[];
+
 create or replace function public.ensure_live_room(
   p_room_id text,
   p_display_name text,
