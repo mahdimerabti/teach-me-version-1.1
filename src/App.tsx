@@ -223,6 +223,18 @@ export default function App() {
         return;
       }
 
+      if (event === 'PASSWORD_RECOVERY') {
+        authLog('PASSWORD_RECOVERY event received; opening SetPasswordModal.');
+        cleanOAuthParamsFromUrl();
+        if (isMounted) {
+          setIsSetPasswordOpen(true);
+        }
+        if (session?.user) {
+          scheduleSessionUser(session.user);
+        }
+        return;
+      }
+
       if (
         session?.user &&
         (event === 'INITIAL_SESSION' ||

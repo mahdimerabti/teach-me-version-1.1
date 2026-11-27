@@ -122,11 +122,12 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
 
         let activeSession: any = null;
 
+        const redirectUri = getSafeRedirectUrl();
         const { data: signUpData, error: authError } = await supabase.auth.signUp({
           email: trimmedEmail,
           password: form.password,
           options: {
-            emailRedirectTo: `${window.location.origin}`,
+            emailRedirectTo: redirectUri,
             data: {
               full_name: defaultName,
               role: createdRole
@@ -134,74 +135,34 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           }
         });
 
-        if (!authError && signUpData?.user) {
-          userId = signUpData.user.id;
-          activeSession = signUpData.session || null;
-        } else if (authError) {
+        if (authError) {
           const lowerMsg = (authError.message || '').toLowerCase();
           if (lowerMsg.includes('already registered') || lowerMsg.includes('already exists')) {
-            // Attempt automatic sign in if account exists
-            const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-              email: trimmedEmail,
-              password: form.password
-            });
-
-            if (signInError || !signInData.user) {
-              throw new Error(
-                t(
-                  'An account with this email already exists. Please sign in with your password.',
-                  'هناك حساب مسجل بهذا البريد بالفعل. يرجى تسجيل الدخول بكتابة كلمة المرور.',
-                  'Un compte avec cet e-mail existe déjà. Veuillez vous connecter.'
-                )
-              );
-            }
-            userId = signInData.user.id;
-            activeSession = signInData.session;
-          } else {
-            // Fallback to server-side register_user_account RPC if Supabase SMTP rate limit (429) or mailer error occurs
-            const { data: rpcReg, error: rpcErr } = await supabase.rpc('register_user_account', {
-              p_email: trimmedEmail,
-              p_password: form.password,
-              p_full_name: defaultName,
-              p_role: createdRole
-            });
-            if (rpcErr || rpcReg?.error) {
-              throw authError;
-            }
-            if (rpcReg?.user_id) {
-              userId = rpcReg.user_id;
-            }
+            throw new Error(
+              t(
+                'An account with this email already exists. Please sign in with your password.',
+                'هناك حساب مسجل بهذا البريد بالفعل. يرجى تسجيل الدخول بكتابة كلمة المرور.',
+                'Un compte avec cet e-mail existe déjà. Veuillez vous connecter.'
+              )
+            );
           }
+          throw authError;
         }
 
-        // Try immediate password sign in if signUp did not return an active session
-        if (!activeSession && trimmedEmail && form.password) {
-          try {
-            const { data: directSignIn, error: directErr } = await supabase.auth.signInWithPassword({
-              email: trimmedEmail,
-              password: form.password
-            });
-            if (directSignIn?.user && directSignIn?.session) {
-              userId = directSignIn.user.id;
-              activeSession = directSignIn.session;
-            } else if (directErr) {
-              // Ensure account is confirmed via RPC and retry sign in once
-              await supabase.rpc('register_user_account', {
-                p_email: trimmedEmail,
-                p_password: form.password,
-                p_full_name: defaultName,
-                p_role: createdRole
-              });
-              const { data: retrySignIn } = await supabase.auth.signInWithPassword({
-                email: trimmedEmail,
-                password: form.password
-              });
-              if (retrySignIn?.user && retrySignIn?.session) {
-                userId = retrySignIn.user.id;
-                activeSession = retrySignIn.session;
-              }
-            }
-          } catch (_) {}
+        // Supabase returns empty identities when email confirmation is enabled and the email is already registered
+        if (signUpData?.user && Array.isArray(signUpData.user.identities) && signUpData.user.identities.length === 0) {
+          throw new Error(
+            t(
+              'An account with this email already exists. Please sign in or reset your password.',
+              'هناك حساب مسجل بهذا البريد بالفعل. يرجى تسجيل الدخول أو إعادة تعيين كلمة المرور.',
+              'Un compte avec cet e-mail existe déjà. Veuillez vous connecter ou réinitialiser votre mot de passe.'
+            )
+          );
+        }
+
+        if (signUpData?.user) {
+          userId = signUpData.user.id;
+          activeSession = signUpData.session || null;
         }
 
         const activeId = userId || signUpData?.user?.id || '';
@@ -209,11 +170,12 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         if (!activeSession) {
           setSuccessInfo(
             t(
-              'Account created! Please check your email inbox to confirm your account, then sign in.',
-              'تم إنشاء الحساب! يرجى مراجعة بريدك الإلكتروني لتأكيد حسابك ثم تسجيل الدخول.',
-              'Compte créé ! Veuillez vérifier votre e-mail pour confirmer votre compte, puis connectez-vous.'
+              'Account created! We sent a confirmation email to your inbox. Please click the confirmation link before signing in.',
+              'تم إنشاء الحساب! أرسلنا رسالة تأكيد إلى بريدك الإلكتروني. يرجى فتح الرسالة والضغط على رابط التأكيد قبل تسجيل الدخول.',
+              'Compte créé ! Un e-mail de confirmation a été envoyé. Veuillez cliquer sur le lien avant de vous connecter.'
             )
           );
+          setForm((prev) => ({ ...prev, password: '' }));
           setMode('login');
           setLoading(false);
           return;
