@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { makeT } from '../i18n';
 import { KeyRound, Eye, EyeOff, Loader2, CheckCircle, AlertTriangle, X } from 'lucide-react';
 import { supabase, authLog } from '../lib/supabase';
+import { validatePasswordStrength } from '../lib/security';
 
 interface SetPasswordModalProps {
   isOpen: boolean;
@@ -26,7 +28,7 @@ export default function SetPasswordModal({
 
   if (!isOpen) return null;
 
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
 
   const handleSetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,8 +40,17 @@ export default function SetPasswordModal({
       return;
     }
 
-    if (password.length < 6) {
-      setError(t('Password must be at least 6 characters long', 'كلمة المرور يجب أن تكون 6 أحرف على الأقل'));
+    const strength = validatePasswordStrength(password);
+    if (!strength.valid) {
+      setError(
+        strength.reason === 'long'
+          ? t('Password must not exceed 128 characters', 'كلمة المرور يجب ألا تتجاوز 128 حرفاً')
+          : t(
+              'Password must be at least 8 characters and include both letters and numbers',
+              'كلمة المرور يجب أن تتكون من 8 أحرف على الأقل وتحتوي على حروف وأرقام',
+              'Le mot de passe doit contenir au moins 8 caractères avec des lettres et des chiffres'
+            )
+      );
       return;
     }
 

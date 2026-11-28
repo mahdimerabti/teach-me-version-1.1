@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { makeT, formatUnit as fmtUnit, formatClock as fmtClock, formatDate as fmtDate } from '../i18n';
 import {
   BookOpen, Star, Users, Clock, MessageSquare, Calendar,
   CheckCircle, Send, ChevronRight, Bell, LogOut, User,
@@ -9,9 +10,9 @@ import { type Question } from '../lib/db';
 import type { TutorProfile } from './TutorRegisterScreen';
 import LiveMeetingRoom from './LiveMeetingRoom';
 import { supabase } from '../lib/supabase';
-import { convertDbTimeToFrontend } from '../lib/bookingsStore';
 import { dayToNumber } from './booking/MultiSlotCalendar';
 import { CURRENCY_CODE } from '../lib/config';
+import { getSafeUploadExtension } from '../lib/security';
 import {
   fetchUserConversations,
   fetchMessages,
@@ -115,17 +116,18 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
       alert(t('File size exceeds 5MB', 'حجم الملف يتجاوز 5 ميغابايت', 'La taille dépasse 5 Mo'));
       return;
     }
-    if (!file.type.startsWith('image/')) {
-      alert(t('Only image files are allowed', 'يسمح بملفات الصور فقط', 'Seules les images sont autorisées'));
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowedMimes.includes(file.type)) {
+      alert(t('Only JPG, PNG, WEBP, or GIF images are allowed', 'يسمح بملفات الصور (JPG, PNG, WEBP, GIF) فقط', 'Seules les images JPG, PNG, WEBP ou GIF sont autorisées'));
       return;
     }
     setAvatarUploading(true);
     try {
-      const fileExt = file.name.split('.').pop() || 'jpg';
-      const filePath = `avatar-${user.id}-${Date.now()}.${fileExt}`;
+      const fileExt = getSafeUploadExtension(file.name, ['jpg', 'jpeg', 'png', 'webp', 'gif'], 'jpg');
+      const filePath = `${user.id}/avatar-${Date.now()}.${fileExt}`;
       const { error: uploadErr } = await supabase.storage
         .from('avatars')
-        .upload(filePath, file, { cacheControl: '3600', upsert: true });
+        .upload(filePath, file, { cacheControl: '3600', contentType: file.type, upsert: true });
       if (uploadErr) throw uploadErr;
       const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(filePath);
       setEditAvatarUrl(publicUrl);
@@ -505,11 +507,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     };
   }, [user.id, loadTutorData]);
 
-  const t = (en: string, ar: string, fr?: string) => {
-    if (language === 'ar') return ar;
-    if (language === 'fr') return fr || en;
-    return en;
-  };
+  const t = makeT(language);
  
   const DAYS_EN = [
     t('Sunday', 'الأحد', 'Dimanche'),
@@ -573,15 +571,24 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   const totalEarnings = sessions.filter(s => s.status === 'completed').reduce((sum, s) => sum + (s.credit_cost * 25), 0);
   const totalSessionsCount = sessions.length;
 
-  const todayStr = new Date().toISOString().split('T')[0];
-  const todaySessions = sessions
-    .filter(s => s.status === 'confirmed' || s.status === 'live')
+  // Local calendar day (toISOString() is UTC and shifts the day around midnight in Algeria)
+  const nowLocal = new Date();
+  const todayStr = `${nowLocal.getFullYear()}-${String(nowLocal.getMonth() + 1).padStart(2, '0')}-${String(nowLocal.getDate()).padStart(2, '0')}`;
+  // Only today's sessions, one row per session id. Past sessions left in 'live' state no longer pile up here.
+  const todaySessions = Array.from(
+    new Map(
+      sessions
+        .filter(s => (s.status === 'confirmed' || s.status === 'live') && String(s.date || '').slice(0, 10) === todayStr)
+        .map(s => [s.id, s] as [string, any])
+    ).values()
+  )
+    .sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)))
     .map(s => ({
       id: s.id,
-      time: convertDbTimeToFrontend(s.start_time),
-      student: studentNames[s.student_id] || 'Student',
-      subject: s.subject || 'Private lesson',
-      duration: '60 min',
+      time: fmtClock(language, s.start_time),
+      student: studentNames[s.student_id] || t('Student', 'طالب', 'Élève'),
+      subject: s.subject || t('Private lesson', 'حصة خاصة', 'Cours particulier'),
+      duration: fmtUnit(language, 60, 'minute', 'short'),
       avatar: (studentNames[s.student_id] || 'S').charAt(0),
       liveRoomId: s.live_room_id,
       startTime: s.start_time,
@@ -596,9 +603,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   const handleStartLesson = async (sessionId: string, liveRoomId?: string) => {
     if (!isApprovedByAdmin) {
       alert(
-        language === 'ar'
-          ? 'عذراً، حسابك كأستاذ ما زال قيد المراجعة والتدقيق من طرف الإدارة. سيتم تفعيل ميزة فتح الحصص المباشرة فور موافقة المسؤول على حسابك.'
-          : 'Sorry, your tutor account is pending approval by administration. Live class creation will be activated once your profile is approved.'
+        t('Sorry, your tutor account is pending approval by administration. Live class creation will be activated once your profile is approved.', 'عذراً، حسابك كأستاذ ما زال قيد المراجعة والتدقيق من طرف الإدارة. سيتم تفعيل ميزة فتح الحصص المباشرة فور موافقة المسؤول على حسابك.', "Désolé, votre compte enseignant est en attente de validation par l'administration. Les cours en direct seront activés dès l'approbation de votre profil.")
       );
       return;
     }
@@ -649,9 +654,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   const handleStartQuickZoomSession = async () => {
     if (!isApprovedByAdmin) {
       alert(
-        language === 'ar'
-          ? 'عذراً، حسابك كأستاذ ما زال قيد المراجعة والتدقيق من طرف الإدارة. سيتم تفعيل ميزة فتح الحصص المباشرة فور موافقة المسؤول على حسابك.'
-          : 'Sorry, your tutor account is pending approval by administration. Live class creation will be activated once your profile is approved.'
+        t('Sorry, your tutor account is pending approval by administration. Live class creation will be activated once your profile is approved.', 'عذراً، حسابك كأستاذ ما زال قيد المراجعة والتدقيق من طرف الإدارة. سيتم تفعيل ميزة فتح الحصص المباشرة فور موافقة المسؤول على حسابك.', "Désolé, votre compte enseignant est en attente de validation par l'administration. Les cours en direct seront activés dès l'approbation de votre profil.")
       );
       return;
     }
@@ -725,10 +728,10 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
     .sort((a, b) => a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time))
     .slice(0, 5)
     .map(s => ({
-      date: new Date(s.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
-      time: convertDbTimeToFrontend(s.start_time),
-      student: studentNames[s.student_id] || 'Student',
-      subject: s.subject || 'Private lesson'
+      date: fmtDate(language, s.date, { weekday: 'short', month: 'short', day: 'numeric' }),
+      time: fmtClock(language, s.start_time),
+      student: studentNames[s.student_id] || t('Student', 'طالب', 'Élève'),
+      subject: s.subject || t('Private lesson', 'حصة خاصة', 'Cours particulier')
     }));
 
   if (activeMeetingRoomId) {
@@ -749,7 +752,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col w-full max-w-5xl mx-auto shadow-2xl border-x border-slate-100 bg-white">
+    <div className="min-h-screen bg-gray-50 flex flex-col w-full max-w-5xl mx-auto md:shadow-2xl md:border-x border-slate-100">
       <div className="bg-white border-b border-gray-100 px-4 py-3 sticky top-0 z-20">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -765,7 +768,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
             <button
               onClick={() => onChangeLanguage(language === 'en' ? 'ar' : language === 'ar' ? 'fr' : 'en')}
               className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-xs font-bold text-blue-600 touch-press"
-              aria-label="Change language"
+              aria-label={t('Change language', 'تغيير اللغة', 'Changer de langue')}
             >
               {language.toUpperCase()}
             </button>
@@ -786,7 +789,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
 
       <div className="flex-1 overflow-y-auto pb-20">
         {tab === 'home' && (
-          <div className="p-4 space-y-4 animate-slide-up">
+          <div className="px-4 pt-5 pb-4 space-y-4 animate-slide-up">
             {status !== 'approved' && (
               <div className={`rounded-2xl p-4 border flex flex-col gap-2 ${
                 status === 'pending' ? 'bg-amber-50 border-amber-200 text-amber-800' :
@@ -894,8 +897,8 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
               </h3>
               <div className="space-y-3">
                 {todaySessions.length > 0 ? (
-                  todaySessions.map((session, i) => (
-                    <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
+                  todaySessions.map((session) => (
+                    <div key={session.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
                       <div className="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center text-white text-sm font-bold">
                         {session.avatar}
                       </div>
@@ -909,7 +912,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
                           >
                             <Video className="w-4 h-4" />
                             {session.status === 'live'
-                              ? t('🔴 Join Live Lesson', '🔴 دخول الحصة المباشرة', '🔴 Rejoindre le cours')
+                              ? t('Join live lesson', 'دخول الحصة المباشرة', 'Rejoindre le cours en direct')
                               : t('▶ Start Lesson', '▶ بدء الحصة المباشرة', '▶ Démarrer le cours')}
                           </button>
                         </div>
@@ -917,7 +920,7 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
                       <div className="text-right">
                         <p className="text-xs font-semibold text-blue-600">{session.time}</p>
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                          session.status === 'live' ? 'bg-red-100 text-red-700 font-bold animate-pulse' : 'bg-green-100 text-green-700'
+                          session.status === 'live' ? 'bg-emerald-100 text-emerald-700 font-bold' : 'bg-blue-50 text-blue-700'
                         }`}>
                           {session.status === 'live' ? t('LIVE NOW', 'مباشر الآن', 'EN DIRECT') : t('Confirmed', 'مؤكد', 'Confirmé')}
                         </span>
@@ -1095,15 +1098,14 @@ export default function TutorDashboard({ user, profile, onLogout, onEditProfile,
         )}
 
         {tab === 'profile' && (
-          <div className="p-4 space-y-4 animate-slide-up text-left">
+          <div className="p-4 space-y-4 animate-slide-up text-start">
             <div className="bg-white rounded-2xl p-5 shadow-sm">
               <div className="flex items-start gap-4 mb-4">
                 <div className="w-20 h-20 rounded-2xl bg-blue-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg shadow-blue-200">
                   {displayName.charAt(0)}
                 </div>
                 <div>
-                  <h2 className="font-bold text-gray-900 text-lg">{displayName}</h2>
-                  {profile?.nameAr && <p className="text-gray-500 font-cairo">{profile.nameAr}</p>}
+                  <h2 className="font-bold text-gray-900 text-lg">{language === 'ar' && profile?.nameAr ? profile.nameAr : displayName}</h2>
                   <p className="text-blue-600 text-sm font-medium mt-1">{profile?.category || t('Tutor', 'معلم', 'Enseignant')}</p>
                   <p className="text-gray-400 text-xs mt-0.5">{user.email}</p>
                 </div>

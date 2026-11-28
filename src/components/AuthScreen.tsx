@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { makeT } from '../i18n';
 import { Eye, EyeOff, User, GraduationCap, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import { supabase, authLog } from '../lib/supabase';
 import { isAndroidNative, performAndroidGoogleSignIn, getSafeRedirectUrl, checkGoogleProviderEnabled } from '../lib/androidAuth';
+import { validatePasswordStrength } from '../lib/security';
 
 type Role = 'student' | 'tutor' | 'admin';
 type AuthMode = 'login' | 'register' | 'forgot';
@@ -21,8 +23,10 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
   const [error, setError] = useState('');
   const [successInfo, setSuccessInfo] = useState('');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const failedAttemptsRef = useRef<number>(0);
+  const lockoutUntilRef = useRef<number>(0);
 
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
 
   useEffect(() => {
     if (initialBanner?.message) {
@@ -72,11 +76,36 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
       setError(t('Please fill all fields', 'يرجى ملء جميع الحقول')); 
       return; 
     }
+    if (Date.now() < lockoutUntilRef.current) {
+      const waitSec = Math.ceil((lockoutUntilRef.current - Date.now()) / 1000);
+      setError(
+        t(
+          `Too many failed attempts. Please wait ${waitSec}s before trying again.`,
+          `محاولات فاشلة كثيرة. يرجى الانتظار ${waitSec} ثانية قبل المحاولة مجدداً.`,
+          `Trop de tentatives échouées. Veuillez patienter ${waitSec}s.`
+        )
+      );
+      return;
+    }
     if (mode === 'register' && !form.name.trim()) { 
       setError(t('Please enter your name', 'يرجى إدخال اسمك')); 
       return; 
     }
-    if (inputPassword.length < 6) {
+    if (mode === 'register') {
+      const strength = validatePasswordStrength(form.password);
+      if (!strength.valid) {
+        setError(
+          strength.reason === 'long'
+            ? t('Password must not exceed 128 characters', 'كلمة المرور يجب ألا تتجاوز 128 حرفاً')
+            : t(
+                'Password must be at least 8 characters and include letters and numbers',
+                'كلمة المرور يجب أن تتكون من 8 أحرف على الأقل وتحتوي على حروف وأرقام',
+                'Le mot de passe doit contenir au moins 8 caractères (lettres et chiffres)'
+              )
+        );
+        return;
+      }
+    } else if (inputPassword.length < 6 || inputPassword.length > 128) {
       setError(t('Password must be at least 6 characters long', 'كلمة المرور يجب أن تكون 6 أحرف على الأقل'));
       return;
     }
@@ -84,20 +113,21 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
     setLoading(true);
     try {
       if (mode === 'register') {
-        let createdRole = role;
+        const createdRole: 'student' | 'tutor' = role === 'tutor' ? 'tutor' : 'student';
 
         setSuccessInfo('');
 
-        const defaultName = form.name.trim() || trimmedEmail.split('@')[0];
+        const defaultName = (form.name.trim() || trimmedEmail.split('@')[0]).slice(0, 100);
         let userId = '';
 
         let activeSession: any = null;
 
+        const redirectUri = getSafeRedirectUrl();
         const { data: signUpData, error: authError } = await supabase.auth.signUp({
           email: trimmedEmail,
           password: form.password,
           options: {
-            emailRedirectTo: `${window.location.origin}`,
+            emailRedirectTo: redirectUri,
             data: {
               full_name: defaultName,
               role: createdRole
@@ -105,74 +135,34 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           }
         });
 
-        if (!authError && signUpData?.user) {
-          userId = signUpData.user.id;
-          activeSession = signUpData.session || null;
-        } else if (authError) {
+        if (authError) {
           const lowerMsg = (authError.message || '').toLowerCase();
           if (lowerMsg.includes('already registered') || lowerMsg.includes('already exists')) {
-            // Attempt automatic sign in if account exists
-            const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-              email: trimmedEmail,
-              password: form.password
-            });
-
-            if (signInError || !signInData.user) {
-              throw new Error(
-                t(
-                  'An account with this email already exists. Please sign in with your password.',
-                  'هناك حساب مسجل بهذا البريد بالفعل. يرجى تسجيل الدخول بكتابة كلمة المرور.',
-                  'Un compte avec cet e-mail existe déjà. Veuillez vous connecter.'
-                )
-              );
-            }
-            userId = signInData.user.id;
-            activeSession = signInData.session;
-          } else {
-            // Fallback to server-side register_user_account RPC if Supabase SMTP rate limit (429) or mailer error occurs
-            const { data: rpcReg, error: rpcErr } = await supabase.rpc('register_user_account', {
-              p_email: trimmedEmail,
-              p_password: form.password,
-              p_full_name: defaultName,
-              p_role: createdRole
-            });
-            if (rpcErr || rpcReg?.error) {
-              throw authError;
-            }
-            if (rpcReg?.user_id) {
-              userId = rpcReg.user_id;
-            }
+            throw new Error(
+              t(
+                'An account with this email already exists. Please sign in with your password.',
+                'هناك حساب مسجل بهذا البريد بالفعل. يرجى تسجيل الدخول بكتابة كلمة المرور.',
+                'Un compte avec cet e-mail existe déjà. Veuillez vous connecter.'
+              )
+            );
           }
+          throw authError;
         }
 
-        // Try immediate password sign in if signUp did not return an active session
-        if (!activeSession && trimmedEmail && form.password) {
-          try {
-            const { data: directSignIn, error: directErr } = await supabase.auth.signInWithPassword({
-              email: trimmedEmail,
-              password: form.password
-            });
-            if (directSignIn?.user && directSignIn?.session) {
-              userId = directSignIn.user.id;
-              activeSession = directSignIn.session;
-            } else if (directErr) {
-              // Ensure account is confirmed via RPC and retry sign in once
-              await supabase.rpc('register_user_account', {
-                p_email: trimmedEmail,
-                p_password: form.password,
-                p_full_name: defaultName,
-                p_role: createdRole
-              });
-              const { data: retrySignIn } = await supabase.auth.signInWithPassword({
-                email: trimmedEmail,
-                password: form.password
-              });
-              if (retrySignIn?.user && retrySignIn?.session) {
-                userId = retrySignIn.user.id;
-                activeSession = retrySignIn.session;
-              }
-            }
-          } catch (_) {}
+        // Supabase returns empty identities when email confirmation is enabled and the email is already registered
+        if (signUpData?.user && Array.isArray(signUpData.user.identities) && signUpData.user.identities.length === 0) {
+          throw new Error(
+            t(
+              'An account with this email already exists. Please sign in or reset your password.',
+              'هناك حساب مسجل بهذا البريد بالفعل. يرجى تسجيل الدخول أو إعادة تعيين كلمة المرور.',
+              'Un compte avec cet e-mail existe déjà. Veuillez vous connecter ou réinitialiser votre mot de passe.'
+            )
+          );
+        }
+
+        if (signUpData?.user) {
+          userId = signUpData.user.id;
+          activeSession = signUpData.session || null;
         }
 
         const activeId = userId || signUpData?.user?.id || '';
@@ -180,11 +170,12 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         if (!activeSession) {
           setSuccessInfo(
             t(
-              'Account created! Please check your email inbox to confirm your account, then sign in.',
-              'تم إنشاء الحساب! يرجى مراجعة بريدك الإلكتروني لتأكيد حسابك ثم تسجيل الدخول.',
-              'Compte créé ! Veuillez vérifier votre e-mail pour confirmer votre compte, puis connectez-vous.'
+              'Account created! We sent a confirmation email to your inbox. Please click the confirmation link before signing in.',
+              'تم إنشاء الحساب! أرسلنا رسالة تأكيد إلى بريدك الإلكتروني. يرجى فتح الرسالة والضغط على رابط التأكيد قبل تسجيل الدخول.',
+              'Compte créé ! Un e-mail de confirmation a été envoyé. Veuillez cliquer sur le lien avant de vous connecter.'
             )
           );
+          setForm((prev) => ({ ...prev, password: '' }));
           setMode('login');
           setLoading(false);
           return;
@@ -231,13 +222,9 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         setLoading(false);
         return;
       } else {
-        // Automatic Administrator Detection by Admin Role or Admin Credentials
-        const adminEmail = (import.meta.env.VITE_ADMIN_EMAIL || 'admin@demo.com').trim().toLowerCase();
-
-        const isExactAdminEmail = trimmedEmail.toLowerCase() === adminEmail || trimmedEmail.toLowerCase() === 'admin@teachme.dz';
         const isRoleAdmin = role === 'admin';
 
-        if (isRoleAdmin || isExactAdminEmail) {
+        if (isRoleAdmin) {
           const withTimeout = <T,>(p: PromiseLike<T>, ms = 10000): Promise<T> =>
             Promise.race([
               Promise.resolve(p),
@@ -270,8 +257,8 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           const adminId = authData.user.id;
           const adminFullName = authData.user.user_metadata?.full_name || 'System Administrator';
 
-          // Verify profile role (bounded by timeout so login can never hang)
-          let verifiedRole: Role = isExactAdminEmail ? 'admin' : 'student';
+          // Server-authoritative role verification from public.profiles (never trust client email matching)
+          let verifiedRole: Role = 'student';
           try {
             const { data: prof } = await withTimeout(
               supabase
@@ -283,23 +270,11 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
             );
             if (prof?.role === 'admin') {
               verifiedRole = 'admin';
-            } else if (isExactAdminEmail) {
-              await withTimeout(
-                supabase.from('profiles').upsert(
-                  {
-                    user_id: adminId,
-                    full_name: prof?.full_name || adminFullName,
-                    role: 'admin'
-                  },
-                  { onConflict: 'user_id' }
-                ),
-                4000
-              );
-              verifiedRole = 'admin';
             }
           } catch (_) {}
 
           if (verifiedRole !== 'admin') {
+            await supabase.auth.signOut().catch(() => {});
             throw new Error(
               t(
                 'This account does not have administrator privileges.',
@@ -308,6 +283,7 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
             );
           }
 
+          failedAttemptsRef.current = 0;
           const adminUser = {
             name: adminFullName,
             email: authData.user.email || trimmedEmail,
@@ -337,27 +313,32 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
             .eq('user_id', data.user.id)
             .maybeSingle();
           profile = profData;
-        } catch (e) {
+        } catch (_e) {
           // Non-blocking profile fetch fallback
         }
 
-        const userRole = (profile?.role as Role) || (data.user.user_metadata?.role as Role) || role;
+        const safeFallbackRole: Role = role === 'tutor' ? 'tutor' : 'student';
+        const metaRole = data.user.user_metadata?.role;
+        const resolvedFallbackRole: Role =
+          metaRole === 'tutor' || metaRole === 'student' ? metaRole : safeFallbackRole;
+        const userRole: Role = (profile?.role as Role) || resolvedFallbackRole;
 
         if (!profile) {
-          const defaultName = data.user.user_metadata?.full_name || trimmedEmail.split('@')[0];
+          const defaultName = (data.user.user_metadata?.full_name || trimmedEmail.split('@')[0]).slice(0, 100);
           try {
             await supabase.from('profiles').upsert(
               {
                 user_id: data.user.id,
                 full_name: defaultName,
-                role: userRole
+                role: userRole === 'admin' ? 'student' : userRole
               },
               { onConflict: 'user_id' }
             );
           } catch (_) {}
-          profile = { full_name: defaultName, role: userRole };
+          profile = { full_name: defaultName, role: userRole === 'admin' ? 'student' : userRole };
         }
 
+        failedAttemptsRef.current = 0;
         const authenticatedUser = {
           name: profile.full_name,
           email: trimmedEmail,
@@ -368,6 +349,12 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
         onAuth(authenticatedUser);
       }
     } catch (err: any) {
+      failedAttemptsRef.current += 1;
+      if (failedAttemptsRef.current >= 5) {
+        lockoutUntilRef.current = Date.now() + 30_000;
+        failedAttemptsRef.current = 0;
+      }
+
       let msg = err.message || t('Authentication failed', 'فشل عملية المصادقة', 'Échec de l\'authentification');
       
       if (err.message === 'Invalid login credentials') {

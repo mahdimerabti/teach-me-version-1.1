@@ -1,7 +1,9 @@
 import { useState, useRef } from 'react';
+import { makeT } from '../i18n';
 import { ArrowLeft, Upload, Plus, Trash2, Clock, CheckCircle, Video, BookOpen, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { CURRENCY_CODE } from '../lib/config';
+import { getSafeUploadExtension } from '../lib/security';
 
 interface TutorRegisterScreenProps {
   user: { name: string; email: string; id: string };
@@ -101,11 +103,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
   const certFileInputRef = useRef<HTMLInputElement>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
  
-  const t = (en: string, ar: string, fr?: string) => {
-    if (language === 'ar') return ar;
-    if (language === 'fr') return fr || en;
-    return en;
-  };
+  const t = makeT(language);
  
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -116,11 +114,12 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
       return;
     }
  
-    if (!file.type.startsWith('image/')) {
-      alert(t('Only image files are allowed', 'يسمح بملفات الصور فقط', 'Seuls les fichiers image sont autorisés'));
+    const allowedAvatarMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowedAvatarMimes.includes(file.type)) {
+      alert(t('Only JPG, PNG, WEBP, or GIF images are allowed', 'يسمح بملفات الصور (JPG, PNG, WEBP, GIF) فقط', 'Seules les images JPG, PNG, WEBP ou GIF sont autorisées'));
       return;
     }
- 
+
     setAvatarFile(file);
     setAvatarPreview(URL.createObjectURL(file));
   };
@@ -132,6 +131,11 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
       alert(t('File size exceeds 5MB', 'حجم الملف يتجاوز 5 ميغابايت', 'La taille du fichier dépasse 5 Mo'));
       return;
     }
+    const allowedDocMimes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!allowedDocMimes.includes(file.type)) {
+      alert(t('Only JPG, PNG, WEBP, or PDF files are allowed', 'يسمح بملفات JPG, PNG, WEBP أو PDF فقط', 'Seuls les fichiers JPG, PNG, WEBP ou PDF sont autorisés'));
+      return;
+    }
     setIdFile(file);
     setProfile(p => ({ ...p, identityVerified: true }));
   };
@@ -141,6 +145,11 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) {
       alert(t('File size exceeds 5MB', 'حجم الملف يتجاوز 5 ميغابايت', 'La taille du fichier dépasse 5 Mo'));
+      return;
+    }
+    const allowedDocMimes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!allowedDocMimes.includes(file.type)) {
+      alert(t('Only JPG, PNG, WEBP, or PDF files are allowed', 'يسمح بملفات JPG, PNG, WEBP أو PDF فقط', 'Seuls les fichiers JPG, PNG, WEBP ou PDF sont autorisés'));
       return;
     }
     setCertFiles(prev => [...prev, file]);
@@ -184,17 +193,17 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
       let finalCertificates = [...(profile.certificates || [])];
 
       if (avatarFile) {
-        const fileExt = avatarFile.name.split('.').pop();
-        const filePath = `avatar-${user.id}-${Date.now()}.${fileExt}`;
+        const fileExt = getSafeUploadExtension(avatarFile.name, ['jpg', 'jpeg', 'png', 'webp', 'gif'], 'jpg');
+        const filePath = `${user.id}/avatar-${Date.now()}.${fileExt}`;
         const { error: uploadError } = await supabase.storage
           .from('avatars')
           .upload(filePath, avatarFile, {
             cacheControl: '3600',
+            contentType: avatarFile.type,
             upsert: true
           });
         if (uploadError) {
-          console.error('Avatar upload error:', uploadError);
-          throw new Error(t(`Avatar upload failed: ${uploadError.message}`, `فشل تحميل الصورة الشخصية: ${uploadError.message}`));
+          throw new Error(t(`Avatar upload failed: ${uploadError.message}`, `فشل تحميل الصورة الشخصية: ${uploadError.message}`, `Échec de l'envoi de la photo : ${uploadError.message}`));
         }
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
@@ -203,44 +212,61 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
       }
 
       if (idFile) {
-        const fileExt = idFile.name.split('.').pop();
-        const filePath = `id-${user.id}-${Date.now()}.${fileExt}`;
-        const { error: idUploadError } = await supabase.storage
-          .from('avatars')
-          .upload(filePath, idFile, {
+        const fileExt = getSafeUploadExtension(idFile.name, ['jpg', 'jpeg', 'png', 'webp', 'pdf'], 'jpg');
+        const privatePath = `${user.id}/id-${Date.now()}.${fileExt}`;
+        // Prefer private id-documents bucket so government IDs are never publicly accessible
+        const { error: privateErr } = await supabase.storage
+          .from('id-documents')
+          .upload(privatePath, idFile, {
             cacheControl: '3600',
+            contentType: idFile.type,
             upsert: true
           });
-        if (idUploadError) {
-          console.error('ID upload error:', idUploadError);
-          throw new Error(t(`ID document upload failed: ${idUploadError.message}`, `فشل تحميل وثيقة الهوية: ${idUploadError.message}`));
+
+        if (!privateErr) {
+          finalIdDocumentUrl = `id-documents:${privatePath}`;
+          idVerified = false; // Pending admin verification
+        } else {
+          // Graceful fallback only if private bucket migration has not yet been applied
+          const fallbackPath = `${user.id}/id-${Date.now()}.${fileExt}`;
+          const { error: idUploadError } = await supabase.storage
+            .from('avatars')
+            .upload(fallbackPath, idFile, {
+              cacheControl: '3600',
+              contentType: idFile.type,
+              upsert: true
+            });
+          if (idUploadError) {
+            throw new Error(t(`ID document upload failed: ${idUploadError.message}`, `فشل تحميل وثيقة الهوية: ${idUploadError.message}`, `Échec de l'envoi de la pièce d'identité : ${idUploadError.message}`));
+          }
+          const { data: { publicUrl } } = supabase.storage
+            .from('avatars')
+            .getPublicUrl(fallbackPath);
+          finalIdDocumentUrl = publicUrl;
+          idVerified = false;
         }
-        const { data: { publicUrl } } = supabase.storage
-          .from('avatars')
-          .getPublicUrl(filePath);
-        finalIdDocumentUrl = publicUrl;
-        idVerified = true;
       }
 
       if (certFiles.length > 0) {
         finalCertificates = finalCertificates.filter(c => !certFiles.some(f => f.name === c));
         for (const file of certFiles) {
-          const fileExt = file.name.split('.').pop();
-          const filePath = `cert-${user.id}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+          const fileExt = getSafeUploadExtension(file.name, ['jpg', 'jpeg', 'png', 'webp', 'pdf'], 'pdf');
+          const safeTitle = file.name.replace(/[|<>]/g, '_').slice(0, 80);
+          const filePath = `${user.id}/cert-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
           const { error: certUploadError } = await supabase.storage
             .from('avatars')
             .upload(filePath, file, {
               cacheControl: '3600',
+              contentType: file.type,
               upsert: true
             });
           if (certUploadError) {
-            console.error('Cert upload error:', certUploadError);
-            throw new Error(t(`Certificate upload failed: ${certUploadError.message}`, `فشل تحميل الشهادة: ${certUploadError.message}`));
+            throw new Error(t(`Certificate upload failed: ${certUploadError.message}`, `فشل تحميل الشهادة: ${certUploadError.message}`, `Échec de l'envoi du diplôme : ${certUploadError.message}`));
           }
           const { data: { publicUrl } } = supabase.storage
             .from('avatars')
             .getPublicUrl(filePath);
-          finalCertificates.push(`${file.name}|${publicUrl}`);
+          finalCertificates.push(`${safeTitle}|${publicUrl}`);
         }
       }
 
@@ -277,7 +303,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
         <div>
-          <h1 className="font-bold text-gray-900">Tutor Registration</h1>
+          <h1 className="font-bold text-gray-900">{t('Tutor Registration', 'التسجيل كأستاذ', 'Inscription enseignant')}</h1>
           <p className="text-xs text-gray-500">Step {step + 1} of {STEP_TITLES.length}: {STEP_TITLES[step]}</p>
         </div>
       </div>
@@ -304,7 +330,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
           <div className="animate-slide-up space-y-4">
             <div className="bg-blue-50 rounded-2xl p-4 flex items-start gap-3">
               <BookOpen className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-              <p className="text-sm text-blue-700">Fill in your profile details. Students will see this information when choosing their tutor.</p>
+              <p className="text-sm text-blue-700">{t('Fill in your profile details. Students will see this information when choosing their tutor.', 'أكمل بيانات ملفك. سيرى الطلاب هذه المعلومات عند اختيار أستاذهم.', 'Complétez votre profil. Les élèves verront ces informations au moment de choisir leur enseignant.')}</p>
             </div>
 
             <div className="bg-white rounded-2xl p-4 shadow-sm">
@@ -658,7 +684,10 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
             )}
  
             <div className="bg-amber-50 rounded-2xl p-4 text-left">
-              <h4 className="text-sm font-semibold text-amber-800 mb-2">{t('📹 Video Tips', '📹 نصائح لتصوير الفيديو', '📹 Conseils pour la vidéo')}</h4>
+              <h4 className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-1.5">
+                <Video className="w-4 h-4 shrink-0" />
+                <span>{t('Video Tips', 'نصائح لتصوير الفيديو', 'Conseils pour la vidéo')}</span>
+              </h4>
               <ul className="text-xs text-amber-700 space-y-1.5">
                 <li>• Show your enthusiasm for the subject</li>
                 <li>• Keep it between 60–120 seconds</li>
@@ -913,7 +942,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
  
             {profile.meetingSettings && (
               <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
-                <h4 className="font-semibold text-gray-800 text-sm mb-3">Meeting Settings</h4>
+                <h4 className="font-semibold text-gray-800 text-sm mb-3">{t('Meeting Settings', 'إعدادات الحصص', 'Paramètres des cours')}</h4>
                 <ul className="text-xs text-gray-500 space-y-1">
                   <li>• Mute Microphone on Join: {profile.meetingSettings.muteOnJoin ? 'Yes' : 'No'}</li>
                   <li>• Video Muted on Join: {profile.meetingSettings.videoOnJoin ? 'Yes' : 'No'}</li>
@@ -939,8 +968,8 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
               <div className="bg-green-50 rounded-2xl p-4 flex items-center gap-3">
                 <CheckCircle className="w-5 h-5 text-green-500" />
                 <div>
-                  <p className="text-sm font-semibold text-green-800">Identity Verified ✓</p>
-                  <p className="text-xs text-green-600 mt-0.5">Mock ID successfully attached.</p>
+                  <p className="text-sm font-semibold text-green-800">{t('Identity verified', 'تم التحقق من الهوية', 'Identité vérifiée')}</p>
+                  <p className="text-xs text-green-600 mt-0.5">{t('ID document attached.', 'تم إرفاق وثيقة الهوية.', "Pièce d'identité jointe.")}</p>
                 </div>
               </div>
             )}
@@ -949,7 +978,7 @@ export default function TutorRegisterScreen({ user, onBack, onComplete, language
               <div className="bg-green-50 rounded-2xl p-4 flex items-center gap-3">
                 <CheckCircle className="w-5 h-5 text-green-500" />
                 <div>
-                  <p className="text-sm font-semibold text-green-800">Intro Video Added ✓</p>
+                  <p className="text-sm font-semibold text-green-800">{t('Intro video added', 'تمت إضافة الفيديو التعريفي', 'Vidéo de présentation ajoutée')}</p>
                   <p className="text-xs text-green-600 mt-0.5">Your profile will stand out!</p>
                 </div>
               </div>

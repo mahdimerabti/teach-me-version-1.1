@@ -1,11 +1,62 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Cairo:wght@400;500;600;700;800&family=Outfit:wght@400;600;800;900&display=swap');
 @import "tailwindcss";
 
+/* Self-hosted Fonts via fontpool: Plus Jakarta Sans (Latin) + IBM Plex Sans Arabic (Arabic) */
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('/fonts/plus-jakarta-sans-200-800-normal-4490ef9b.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-arabic-400-normal-arabic-a9cefdca.woff2') format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-arabic-500-normal-arabic-31cb9792.woff2') format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-arabic-600-normal-arabic-9e5c019d.woff2') format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans Arabic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-arabic-700-normal-arabic-27765dba.woff2') format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+
 .font-outfit {
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'IBM Plex Sans Arabic', sans-serif;
 }
 .font-cairo {
-  font-family: 'Cairo', sans-serif;
+  font-family: 'IBM Plex Sans Arabic', 'Plus Jakarta Sans', sans-serif;
+}
+
+/* Uniform crisp Lucide icon stroke across the entire app */
+svg.lucide {
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 :root {
@@ -42,7 +93,7 @@ html, body, #root {
 }
 
 body {
-  font-family: 'Inter', 'Cairo', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'IBM Plex Sans Arabic', -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 14px;
   line-height: 1.5;
   color: var(--tm-ink);
@@ -50,6 +101,18 @@ body {
   margin: 0;
   padding: 0;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+[dir="rtl"],
+:lang(ar) {
+  font-family: 'IBM Plex Sans Arabic', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+[dir="rtl"] .font-extrabold,
+[dir="rtl"] .font-black {
+  font-weight: 700;
 }
 
 /* Accessible WCAG-AA visible focus states */
@@ -262,9 +325,11 @@ span, button, a, label {
 .card-hover {
   transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
 }
+@media (hover: hover) and (pointer: fine) {
 .card-hover:hover {
   transform: translateY(-3px);
   box-shadow: 0 12px 32px -4px rgba(59,130,246,0.18), 0 4px 12px -2px rgba(0,0,0,0.08);
+}
 }
 
 /* Tutor avatar pulse (online indicator) */
@@ -422,7 +487,6 @@ input:focus, textarea:focus, select:focus {
   pointer-events: none;
 }
 
-.hover-blue-card:hover,
 .hover-blue-card:focus-visible {
   background: linear-gradient(135deg, #2563eb 0%, #3b82f6 45%, #1d4ed8 100%) !important;
   color: white !important;
@@ -431,14 +495,30 @@ input:focus, textarea:focus, select:focus {
   transform: translateY(-4px) scale(1.01);
   animation: blueWash 2.8s ease infinite, softGlow 2.8s ease-in-out infinite;
 }
+@media (hover: hover) and (pointer: fine) {
+.hover-blue-card:hover {
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 45%, #1d4ed8 100%) !important;
+  color: white !important;
+  border-color: #2563eb !important;
+  box-shadow: 0 18px 40px rgba(59,130,246,0.28), 0 6px 16px rgba(37,99,235,0.18) !important;
+  transform: translateY(-4px) scale(1.01);
+  animation: blueWash 2.8s ease infinite, softGlow 2.8s ease-in-out infinite;
+}
+}
 
-.hover-blue-card:hover::before,
 .hover-blue-card:focus-visible::before,
 .active-blue-card::before {
   opacity: 1;
   animation: shimmer 1.4s ease;
 }
+@media (hover: hover) and (pointer: fine) {
+.hover-blue-card:hover::before {
+  opacity: 1;
+  animation: shimmer 1.4s ease;
+}
+}
 
+@media (hover: hover) and (pointer: fine) {
 .hover-blue-card:hover p,
 .hover-blue-card:hover span,
 .hover-blue-card:hover svg,
@@ -452,35 +532,53 @@ input:focus, textarea:focus, select:focus {
 .hover-blue-card:hover .text-blue-400 {
   color: white !important;
 }
+}
 
+@media (hover: hover) and (pointer: fine) {
 .hover-blue-card:hover .bg-blue-50,
 .hover-blue-card:hover .bg-gray-100 {
   background-color: rgba(255,255,255,0.22) !important;
 }
+}
 
-/* Make icon containers clearly visible on hover/active */
-.hover-blue-card:hover .cat-icon-box,
 .active-blue-card .cat-icon-box {
   background: rgba(255,255,255,0.25) !important;
   box-shadow: 0 0 0 1px rgba(255,255,255,0.3), inset 0 0 0 1px rgba(255,255,255,0.1);
 }
+@media (hover: hover) and (pointer: fine) {
+/* Make icon containers clearly visible on hover/active */
+.hover-blue-card:hover .cat-icon-box {
+  background: rgba(255,255,255,0.25) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.3), inset 0 0 0 1px rgba(255,255,255,0.1);
+}
+}
 
-/* Ensure SVG icons inside icon boxes are clearly visible with shadow */
-.hover-blue-card:hover .cat-icon-box svg,
 .active-blue-card .cat-icon-box svg {
   color: white !important;
   filter: drop-shadow(0 1px 3px rgba(0,0,0,0.25));
 }
+@media (hover: hover) and (pointer: fine) {
+/* Ensure SVG icons inside icon boxes are clearly visible with shadow */
+.hover-blue-card:hover .cat-icon-box svg {
+  color: white !important;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.25));
+}
+}
 
-.hover-blue-card:hover svg,
 .active-blue-card svg {
   color: white !important;
+}
+@media (hover: hover) and (pointer: fine) {
+.hover-blue-card:hover svg {
+  color: white !important;
+}
 }
 
 /* All subject/level cards hover effect */
 .subject-card-hover {
   transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
+@media (hover: hover) and (pointer: fine) {
 .subject-card-hover:hover {
   background: linear-gradient(135deg, #2563eb 0%, #3b82f6 50%, #1d4ed8 100%) !important;
   border-color: #2563eb !important;
@@ -488,17 +586,23 @@ input:focus, textarea:focus, select:focus {
   transform: translateY(-2px);
   box-shadow: 0 12px 28px rgba(59,130,246,0.25);
 }
+}
+@media (hover: hover) and (pointer: fine) {
 .subject-card-hover:hover p,
 .subject-card-hover:hover span,
 .subject-card-hover:hover svg,
 .subject-card-hover:hover div {
   color: white !important;
 }
+}
+@media (hover: hover) and (pointer: fine) {
 .subject-card-hover:hover .cat-icon-box,
 .subject-card-hover:hover [class*="bg-blue-50"],
 .subject-card-hover:hover [class*="bg-gray-"] {
   background: rgba(255,255,255,0.22) !important;
 }
+}
+@media (hover: hover) and (pointer: fine) {
 .subject-card-hover:hover .text-gray-400,
 .subject-card-hover:hover .text-gray-500,
 .subject-card-hover:hover .text-gray-600,
@@ -509,11 +613,14 @@ input:focus, textarea:focus, select:focus {
 .subject-card-hover:hover .text-green-600 {
   color: rgba(255,255,255,0.9) !important;
 }
+}
 
+@media (hover: hover) and (pointer: fine) {
 .hover-blue-card:hover .border-blue-100,
 .hover-blue-card:hover .border-gray-100,
 .hover-blue-card:hover .border-gray-50 {
   border-color: rgba(255,255,255,0.18) !important;
+}
 }
 
 .active-blue-card {
@@ -627,3 +734,89 @@ body.theme-dark .text-slate-400 {
   padding-top: env(safe-area-inset-top);
 }
 
+
+
+/* ==========================================================================
+   Dark mode, complete palette coverage.
+   The original overrides only mapped gray-*; newer screens use slate-*, emerald-*,
+   red-*, rose-* ... which stayed light-mode colours on dark surfaces.
+   ========================================================================== */
+body.theme-dark .bg-slate-100,
+body.theme-dark .bg-slate-200,
+body.theme-dark .bg-gray-200 { background-color: #1e293b !important; }
+body.theme-dark .bg-white\/95,
+body.theme-dark .bg-white\/90 { background-color: rgba(17, 24, 39, 0.92) !important; }
+body.theme-dark .bg-blue-100,
+body.theme-dark .bg-blue-200 { background-color: rgba(59, 130, 246, 0.18) !important; }
+body.theme-dark .bg-emerald-50,
+body.theme-dark .bg-emerald-100,
+body.theme-dark .bg-emerald-200,
+body.theme-dark .bg-green-100,
+body.theme-dark .bg-teal-50 { background-color: rgba(16, 185, 129, 0.16) !important; }
+body.theme-dark .bg-red-50,
+body.theme-dark .bg-red-100,
+body.theme-dark .bg-rose-50,
+body.theme-dark .bg-rose-100 { background-color: rgba(244, 63, 94, 0.16) !important; }
+body.theme-dark .bg-amber-100 { background-color: rgba(245, 158, 11, 0.16) !important; }
+
+body.theme-dark .text-slate-950,
+body.theme-dark .text-slate-900 { color: #f8fafc !important; }
+body.theme-dark .text-slate-800 { color: #e2e8f0 !important; }
+body.theme-dark .text-slate-700 { color: #cbd5e1 !important; }
+body.theme-dark .text-slate-600,
+body.theme-dark .text-slate-500 { color: #94a3b8 !important; }
+body.theme-dark .text-emerald-600,
+body.theme-dark .text-emerald-700,
+body.theme-dark .text-emerald-800,
+body.theme-dark .text-emerald-900,
+body.theme-dark .text-emerald-950,
+body.theme-dark .text-green-800,
+body.theme-dark .text-teal-600 { color: #34d399 !important; }
+body.theme-dark .text-red-600,
+body.theme-dark .text-red-700,
+body.theme-dark .text-red-800,
+body.theme-dark .text-rose-600,
+body.theme-dark .text-rose-700 { color: #fb7185 !important; }
+body.theme-dark .text-blue-800,
+body.theme-dark .text-blue-900 { color: #93c5fd !important; }
+body.theme-dark .text-amber-800,
+body.theme-dark .text-amber-900,
+body.theme-dark .text-orange-800 { color: #fcd34d !important; }
+
+body.theme-dark .border-slate-100,
+body.theme-dark .border-slate-200,
+body.theme-dark .border-slate-300,
+body.theme-dark .border-gray-300 { border-color: #334155 !important; }
+body.theme-dark .border-blue-200,
+body.theme-dark .border-blue-300,
+body.theme-dark .border-indigo-200 { border-color: rgba(96, 165, 250, 0.35) !important; }
+body.theme-dark .border-emerald-100,
+body.theme-dark .border-emerald-200 { border-color: rgba(52, 211, 153, 0.35) !important; }
+body.theme-dark .border-red-100,
+body.theme-dark .border-red-200,
+body.theme-dark .border-rose-100,
+body.theme-dark .border-rose-200 { border-color: rgba(251, 113, 133, 0.35) !important; }
+body.theme-dark .border-amber-200,
+body.theme-dark .border-amber-300,
+body.theme-dark .border-orange-200 { border-color: rgba(251, 191, 36, 0.35) !important; }
+
+body.theme-dark .glass-nav-bar {
+  background: rgba(17, 24, 39, 0.9);
+  border-color: rgba(51, 65, 85, 0.8);
+}
+
+/* ==========================================================================
+   Scrollbars: invisible on phones / touch screens (the thin blue-grey strip on
+   the left edge was the 4px scrollbar thumb, drawn on the left in RTL).
+   ========================================================================== */
+@media (max-width: 767px), (pointer: coarse) {
+  html, body, * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  *::-webkit-scrollbar {
+    width: 0 !important;
+    height: 0 !important;
+    display: none;
+  }
+}

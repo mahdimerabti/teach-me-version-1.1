@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { isValidUuid } from './security';
 
 export type DBMessage = {
   id: string;
@@ -38,17 +39,17 @@ function generateUUID(): string {
  * Gets or creates a conversation record between a student and a tutor.
  */
 export async function getOrCreateConversation(studentId: string, tutorUserIdOrId: string): Promise<string | null> {
-  if (!studentId || !tutorUserIdOrId) return null;
+  if (!isValidUuid(studentId) || !isValidUuid(tutorUserIdOrId)) return null;
 
   try {
-    let realTutorUserId = tutorUserIdOrId;
+    let realTutorUserId = tutorUserIdOrId.trim();
     const { data: tData } = await supabase
       .from('tutors')
       .select('user_id')
-      .eq('id', tutorUserIdOrId)
+      .eq('id', realTutorUserId)
       .maybeSingle();
-    if (tData?.user_id) {
-      realTutorUserId = tData.user_id;
+    if (tData?.user_id && isValidUuid(tData.user_id)) {
+      realTutorUserId = tData.user_id.trim();
     }
 
     // 1. Check if conversation already exists between studentId and realTutorUserId

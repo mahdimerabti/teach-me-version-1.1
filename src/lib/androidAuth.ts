@@ -107,7 +107,7 @@ export async function checkGoogleProviderEnabled(): Promise<{ enabled: boolean; 
  */
 export async function handleOAuthDeepLink(url: string): Promise<boolean> {
   if (!url) return false;
-  authLog(`Processing deep link URL: ${url}`);
+  authLog('Processing OAuth deep link callback');
   try {
     // Parse both query (?...) and hash (#...) parameters safely
     const qIdx = url.indexOf('?');
@@ -123,7 +123,7 @@ export async function handleOAuthDeepLink(url: string): Promise<boolean> {
     const code = queryParams.get('code') || hashParams.get('code');
 
     if (accessToken && refreshToken) {
-      authLog('Setting session from deep link access_token and refresh_token');
+      authLog('Setting session from deep link token pair');
       const { error } = await supabase.auth.setSession({
         access_token: accessToken,
         refresh_token: refreshToken
@@ -132,10 +132,10 @@ export async function handleOAuthDeepLink(url: string): Promise<boolean> {
         authLog(`Error setting session from deep link tokens: ${error.message}`);
         return false;
       }
-      authLog('Successfully restored session from deep link access_token');
+      authLog('Successfully restored session from deep link');
       return true;
     } else if (code) {
-      authLog(`Exchanging deep link authorization code: ${code}`);
+      authLog('Exchanging deep link authorization code');
       const { data, error } = await supabase.auth.exchangeCodeForSession(code);
       if (error) {
         authLog(`Error exchanging deep link code for session: ${error.message}`);

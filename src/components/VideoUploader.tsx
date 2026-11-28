@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { makeT } from '../i18n';
 import { AlertCircle, CheckCircle, Loader2, Upload } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -13,7 +14,7 @@ type Props = {
 };
 
 export default function VideoUploader({ tutorUserId, language = 'ar', currentVideoUrl, onUploaded }: Props) {
-  const t = (en: string, ar: string) => (language === 'ar' ? ar : en);
+  const t = makeT(language);
   const inputRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<'idle' | 'uploading' | 'done' | 'error'>('idle');
   const [message, setMessage] = useState('');
@@ -27,7 +28,7 @@ export default function VideoUploader({ tutorUserId, language = 'ar', currentVid
     if (file.size > MAX_SIZE_MB * 1024 * 1024) {
       setState('error');
       setMessage(
-        t(`File too large. Max size is ${MAX_SIZE_MB}MB.`, `حجم الملف كبير جداً. الحد الأقصى ${MAX_SIZE_MB} ميغابايت.`)
+        t(`File too large. Max size is ${MAX_SIZE_MB}MB.`, `حجم الملف كبير جداً. الحد الأقصى ${MAX_SIZE_MB} ميغابايت.`, `Fichier trop volumineux. Taille max : ${MAX_SIZE_MB} Mo.`)
       );
       return;
     }
@@ -72,7 +73,7 @@ export default function VideoUploader({ tutorUserId, language = 'ar', currentVid
             : t('Upload intro video', 'رفع فيديو تعريفي')}
         </p>
         <p className="text-[11px] text-gray-400 mt-1">
-          {t(`MP4 or WebM · 1–3 minutes · max ${MAX_SIZE_MB}MB`, `MP4 أو WebM · 1–3 دقائق · بحد أقصى ${MAX_SIZE_MB} ميغابايت`)}
+          {t(`MP4 or WebM · 1–3 minutes · max ${MAX_SIZE_MB}MB`, `MP4 أو WebM · 1–3 دقائق · بحد أقصى ${MAX_SIZE_MB} ميغابايت`, `MP4 ou WebM · 1 à 3 minutes · ${MAX_SIZE_MB} Mo max`)}
         </p>
       </button>
       <input

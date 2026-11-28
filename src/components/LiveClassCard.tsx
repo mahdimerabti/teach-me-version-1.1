@@ -1,4 +1,5 @@
 import { Video, Loader2 } from 'lucide-react';
+import { makeT } from '../i18n';
 
 interface LiveClassCardProps {
   tutorName: string;
@@ -21,8 +22,7 @@ export default function LiveClassCard({
   language,
   compact = false,
 }: LiveClassCardProps) {
-  const t = (en: string, ar: string, fr: string) =>
-    language === 'ar' ? ar : language === 'fr' ? fr : en;
+  const t = makeT(language);
 
   const fallbackAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(
     tutorName || 'Tutor'

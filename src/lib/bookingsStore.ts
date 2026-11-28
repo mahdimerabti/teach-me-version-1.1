@@ -203,9 +203,9 @@ export async function addSessionsRemote(
 }
 
 export function addSessions(
-  tutor: Tutor,
-  subject: string,
-  slots: SelectedSlot[]
+  _tutor: Tutor,
+  _subject: string,
+  _slots: SelectedSlot[]
 ): { ok: true; sessions: BookedSession[] } | { ok: false; conflict: string } {
   return { ok: true, sessions: [] };
 }

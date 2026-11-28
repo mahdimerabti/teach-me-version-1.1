@@ -31,3 +31,13 @@ dist-ssr
 # Supabase backup folder (contains auth hashes & data dumps)
 supabase-backup
 supabase-backup/
+
+# Local scratch, backup, and dump artifacts (never commit)
+_backup*/
+_tm_tmp/
+_taste_parts/
+*.bak
+*.dump
+*.sql.gz
+*.keystore
+*.jks

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { makeT, tr as trL, formatUnit as fmtUnit, formatClock as fmtClock, formatDate as fmtDate, formatDateTime as fmtDateTime, formatTime as fmtTime, formatNumber as fmtNumber } from '../i18n';
 import {
   BookOpen, Search, Bell, User, ChevronRight, Star, Clock,
   MessageSquare, Calendar, TrendingUp, LogOut, Video,
@@ -12,7 +13,6 @@ import { categories, subjects, tutors, getSubjectsByCategory, getLevelsBySubject
 import MultiSlotCalendar, { dayToNumber } from './booking/MultiSlotCalendar';
 import TutorVideoIntro from './TutorVideoIntro';
 import PackagesScreen from './PackagesScreen';
-import CreditBadge from './CreditBadge';
 import CreditHistoryScreen from './CreditHistoryScreen';
 import JoinSessionButton from './JoinSessionButton';
 import LiveMeetingRoom from './LiveMeetingRoom';
@@ -21,6 +21,7 @@ import { addSessionsRemote, useBookedSessions, convertDbTimeToFrontend, type Boo
 import { claimFreeTrialCredits, spendTrialCreditForLiveJoin } from '../lib/credits';
 import { FREE_TRIAL_INITIAL_CREDITS, PAID_PLANS_ENABLED } from '../lib/config';
 import { supabase } from '../lib/supabase';
+import { sanitizeExternalUrl, isValidUuid } from '../lib/security';
 import {
   enableWebPushNotifications,
   getPushStatus,
@@ -220,9 +221,10 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
       }
 
       const target = tutor.activeSessionUrl.trim();
-      if (/^https?:\/\//i.test(target)) {
-        window.open(target, '_blank', 'noopener,noreferrer');
-      } else {
+      const safeExternal = sanitizeExternalUrl(target);
+      if (safeExternal) {
+        window.open(safeExternal, '_blank', 'noopener,noreferrer');
+      } else if (/^[A-Za-z0-9_-]{3,100}$/.test(target)) {
         setLiveRoomId(target);
         nav('meeting');
       }
@@ -567,9 +569,10 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     setLiveToast(null);
     if (n.room_id) {
       const target = n.room_id.trim();
-      if (/^https?:\/\//i.test(target)) {
-        window.open(target, '_blank', 'noopener,noreferrer');
-      } else {
+      const safeExternal = sanitizeExternalUrl(target);
+      if (safeExternal) {
+        window.open(safeExternal, '_blank', 'noopener,noreferrer');
+      } else if (/^[A-Za-z0-9_-]{3,100}$/.test(target)) {
         setLiveRoomId(target);
         nav('meeting');
       }
@@ -642,11 +645,11 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   const [reviewHover, setReviewHover] = useState(0);
   const [reviewMessage, setReviewMessage] = useState('');
 
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
 
   const formatCurrency = (val: number) => {
     const amountDzd = val > 200 ? Math.round(val) : Math.round(val * 200);
-    return `${amountDzd.toLocaleString()} ${t('DZD', 'د.ج', 'DA')}`;
+    return `${fmtNumber(language, amountDzd)} ${t('DZD', 'د.ج', 'DA')}`;
   };
 
 
@@ -827,12 +830,15 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     document.body.classList.toggle('theme-dark', themeMode === 'dark');
   }, [themeMode]);
 
+  // Dark mode belongs to the student shell only; do not leak it into other roles after logout
+  useEffect(() => () => { document.body.classList.remove('theme-dark'); }, []);
+
   const nav = (s: Screen) => setScreen(s);
 
   const confirmBooking = async () => {
     if (!selectedTutor || selectedSlots.length === 0) return;
     const subjectName = selectedLevel
-      ? (language === 'en' ? selectedLevel.name : selectedLevel.nameAr)
+      ? (trL(language, selectedLevel.name, selectedLevel.nameAr))
       : (selectedTutor.subjects[0] || t('Private lesson', 'حصة خصوصية'));
     
     const result = await addSessionsRemote(selectedTutor.id, subjectName, selectedSlots);
@@ -871,32 +877,19 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     localStorage.setItem('tm_session_reviews', JSON.stringify(next));
 
     const sess = bookedSessions.find(s => s.id === reviewTarget.id);
-    const targetName = sess?.tutorName || reviewTarget.tutor;
+    const resolvedTutorId = sess?.tutorId;
 
-    if (targetName) {
+    if (resolvedTutorId && isValidUuid(resolvedTutorId) && isValidUuid(user.id)) {
       try {
-        const { data: tutorData } = await supabase
-          .from('tutors')
-          .select('id, rating, review_count')
-          .or(`name.eq."${targetName}",name_ar.eq."${targetName}"`)
-          .maybeSingle();
-
-        if (tutorData) {
-          const currentRating = Number(tutorData.rating || 4.8);
-          const currentCount = Number(tutorData.review_count || 1);
-          const newCount = currentCount + 1;
-          const newRating = Number(((currentRating * currentCount + reviewStars) / newCount).toFixed(1));
-
-          await supabase
-            .from('tutors')
-            .update({
-              rating: newRating,
-              review_count: newCount
-            })
-            .eq('id', tutorData.id);
-        }
-      } catch (err) {
-        console.error('Error saving review to database:', err);
+        await supabase.from('reviews').insert({
+          tutor_id: resolvedTutorId,
+          student_id: user.id,
+          session_id: isValidUuid(reviewTarget.id) ? reviewTarget.id : null,
+          rating: Math.max(1, Math.min(5, Math.round(reviewStars))),
+          comment: reviewMessage.trim().slice(0, 1000)
+        });
+      } catch (_err) {
+        // Trigger recomputes aggregate rating server-side; ignore duplicate session review
       }
     }
 
@@ -914,6 +907,11 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
     setSelectedCategory(null);
     setSelectedLevel(null);
   };
+
+  // Clear the tapped-tile highlight whenever the user comes back to a tile grid
+  useEffect(() => {
+    if (screen === 'home' || screen === 'categories') setActiveCategoryCard('');
+  }, [screen]);
 
   const openCategory = (cat: Category) => {
     setActiveCategoryCard(cat.id);
@@ -1049,15 +1047,15 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
   if (activeNav === 'dashboard') return (
     <div className="min-h-[100dvh] w-full tm-app-shell bg-gray-50 flex flex-col overflow-x-hidden">
       <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-20">
-        <h1 className="font-bold text-gray-900">My Dashboard</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Track your learning progress</p>
+        <h1 className="font-bold text-gray-900">{t('My Dashboard', 'لوحتي', 'Mon tableau de bord')}</h1>
+        <p className="text-xs text-gray-400 mt-0.5">{t('Track your learning progress', 'تابع تقدمك الدراسي', 'Suivez vos progrès')}</p>
       </div>
       <div className="flex-1 overflow-y-auto pb-20 p-4 space-y-4 animate-slide-up">
         <div className="grid grid-cols-2 gap-3">
           {[
             { label: t('Sessions Done', 'الجلسات المكتملة'), value: String(completedSessionsCount), icon: BookOpen, color: 'text-blue-600', bg: 'bg-blue-50' },
-            { label: t('Hours Learned', 'ساعات التعلم'), value: `${hoursLearned} hrs`, icon: Clock, color: 'text-green-600', bg: 'bg-green-50' },
-            { label: t('Streak', 'السلسلة اليومية'), value: `${streakDays} days`, icon: Zap, color: 'text-yellow-600', bg: 'bg-yellow-50' },
+            { label: t('Hours Learned', 'ساعات التعلم'), value: fmtUnit(language, hoursLearned, 'hour'), icon: Clock, color: 'text-green-600', bg: 'bg-green-50' },
+            { label: t('Streak', 'السلسلة اليومية'), value: fmtUnit(language, streakDays, 'day'), icon: Zap, color: 'text-yellow-600', bg: 'bg-yellow-50' },
             { label: t('Certificates', 'الشهادات'), value: String(certificatesCount), icon: Award, color: 'text-purple-600', bg: 'bg-purple-50' },
           ].map(({ label, value, icon: Icon, color, bg }) => (
             <div key={label} className="bg-white rounded-2xl p-4 shadow-sm card-hover">
@@ -1163,7 +1161,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-blue-600 font-medium mt-1.5">
                     <span>{s.date}</span>
                     <span>•</span>
-                    <span>{s.startTime} – {s.endTime}</span>
+                    <span>{fmtClock(language, s.startTime)} – {fmtClock(language, s.endTime)}</span>
                     <span>•</span>
                     <span>{s.creditCost} {t('credits', 'رصيد')}</span>
                   </div>
@@ -1211,7 +1209,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-blue-600 font-medium mt-1.5">
                         <span>{s.date}</span>
                         <span>•</span>
-                        <span>{s.startTime} – {s.endTime}</span>
+                        <span>{fmtClock(language, s.startTime)} – {fmtClock(language, s.endTime)}</span>
                       </div>
                       {review ? (
                         <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
@@ -1329,8 +1327,8 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           <div className="grid grid-cols-3 gap-3 mt-5">
             {[
               { label: t('Sessions', 'الجلسات', 'Sessions'), value: String(completedSessionsCount) },
-              { label: t('Hours', 'الساعات', 'Heures'), value: `${hoursLearned}h` },
-              { label: t('Streak', 'الاستمرارية', 'Série'), value: t(`${streakDays} days`, `${streakDays} أيام`, `${streakDays} jours`) },
+              { label: t('Hours', 'الساعات', 'Heures'), value: fmtUnit(language, hoursLearned, 'hour', 'short') },
+              { label: t('Streak', 'الاستمرارية', 'Série'), value: fmtUnit(language, streakDays, 'day') },
             ].map(({ label, value }) => (
               <div key={label} className="bg-white/15 backdrop-blur-sm rounded-xl p-3 text-center border border-white/20">
                 <p className="text-white font-bold text-lg">{value}</p>
@@ -1458,8 +1456,8 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             <div className="grid grid-cols-2 gap-3">
               {[
                 { label: t('Sessions Done', 'الجلسات المنجزة', 'Sessions terminées'), value: String(completedSessionsCount), icon: BookOpen, color: 'text-blue-600', bg: 'bg-blue-50' },
-                { label: t('Hours Learned', 'ساعات التعلم', 'Heures apprises'), value: String(hoursLearned), icon: Clock, color: 'text-green-600', bg: 'bg-green-50' },
-                { label: t('Streak', 'الاستمرارية', 'Série'), value: t(`${streakDays} days`, `${streakDays} أيام`, `${streakDays} jours`), icon: Zap, color: 'text-yellow-600', bg: 'bg-yellow-50' },
+                { label: t('Hours Learned', 'ساعات التعلم', 'Heures apprises'), value: fmtUnit(language, hoursLearned, 'hour'), icon: Clock, color: 'text-green-600', bg: 'bg-green-50' },
+                { label: t('Streak', 'الاستمرارية', 'Série'), value: fmtUnit(language, streakDays, 'day'), icon: Zap, color: 'text-yellow-600', bg: 'bg-yellow-50' },
                 { label: t('Certificates', 'الشهادات', 'Certificats'), value: String(certificatesCount), icon: Award, color: 'text-purple-600', bg: 'bg-purple-50' },
               ].map(({ label, value, icon: Icon, color, bg }) => (
                 <div key={label} className={`${bg} rounded-2xl p-3 flex items-center gap-3`}>
@@ -1569,7 +1567,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                 {t('Reminder: Upcoming Session!', 'تذكير: حصتك القادمة قريباً!')}
               </p>
               <p className="text-[10px] text-blue-100 truncate">
-                {upcomingSession.tutorName} • {upcomingSession.subject} ({upcomingSession.date} {upcomingSession.startTime})
+                {upcomingSession.tutorName} • {upcomingSession.subject} ({fmtDate(language, upcomingSession.date)} {fmtClock(language, upcomingSession.startTime)})
               </p>
             </div>
           </div>
@@ -1599,18 +1597,17 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             <button
               onClick={() => onChangeLanguage(language === 'en' ? 'ar' : language === 'ar' ? 'fr' : 'en')}
               className="p-2 hover:bg-gray-100 rounded-xl transition-colors text-xs font-bold text-blue-600 touch-press"
-              aria-label="Change language"
+              aria-label={t('Change language', 'تغيير اللغة', 'Changer de langue')}
             >
               {language.toUpperCase()}
             </button>
             <button
               onClick={() => setThemeMode(prev => prev === 'light' ? 'dark' : 'light')}
               className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
-              aria-label="Toggle theme"
+              aria-label={t('Toggle theme', 'تبديل المظهر', 'Changer de thème')}
             >
               {themeMode === 'light' ? <Moon className="w-4 h-4 text-gray-600" /> : <Sun className="w-4 h-4 text-amber-500" />}
             </button>
-            <CreditBadge onClick={() => nav('packages')} language={language} />
             <button
               onClick={() => setShowNotifications(true)}
               className="relative p-2 hover:bg-gray-100 rounded-xl transition-colors"
@@ -1661,7 +1658,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                   {React.createElement(CATEGORY_ICON_MAP[cat.icon] || BookOpen, { className: 'w-5 h-5 text-blue-600' })}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-gray-800">{language === 'en' ? cat.name : cat.nameAr}</p>
+                  <p className="text-sm font-semibold text-gray-800">{trL(language, cat.name, cat.nameAr)}</p>
                   <p className="text-xs text-gray-400">{t('Category', 'تخصص')}</p>
                 </div>
                 <ChevronRight className="w-4 h-4 text-gray-300" />
@@ -1685,8 +1682,8 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                     <BookMarked className="w-5 h-5 text-blue-600" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800">{language === 'en' ? subject.name : subject.nameAr}</p>
-                    <p className="text-xs text-gray-400">{parentCategory ? (language === 'en' ? parentCategory.name : parentCategory.nameAr) : t('Subject', 'مادة')}</p>
+                    <p className="text-sm font-semibold text-gray-800">{trL(language, subject.name, subject.nameAr)}</p>
+                    <p className="text-xs text-gray-400">{parentCategory ? (trL(language, parentCategory.name, parentCategory.nameAr)) : t('Subject', 'مادة')}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-bold text-blue-600">{formatCurrency(subject.minPrice)}</p>
@@ -1798,7 +1795,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               <button
                 onClick={() => setLiveToast(null)}
                 className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
-                aria-label="Dismiss notification"
+                aria-label={t('Dismiss notification', 'إغلاق الإشعار', 'Fermer la notification')}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1851,8 +1848,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                   }`} style={{ background: isActive ? 'rgba(255,255,255,0.25)' : cat.bgColor }}>
                     <Icon className={`w-7 h-7 transition-all duration-300 ${isActive ? 'text-white drop-shadow category-icon-active' : 'text-blue-500'}`} />
                   </div>
-                  <p className={`font-bold text-base transition-colors ${isActive ? 'text-white' : 'text-gray-800'}`}>{language === 'en' ? cat.name : cat.nameAr}</p>
-                  <p className={`text-sm mt-1 font-cairo transition-colors ${isActive ? 'text-blue-100' : ''}`} style={{ color: isActive ? undefined : cat.color }}>{language === 'en' ? cat.nameAr : cat.name}</p>
+                  <p className={`font-bold text-base transition-colors ${isActive ? 'text-white' : 'text-gray-800'}`}>{trL(language, cat.name, cat.nameAr)}</p>
                   <span className={`mt-2.5 inline-block text-xs font-semibold px-3 py-1.5 rounded-full ${
                     isActive ? 'bg-white text-blue-600' : 'bg-gray-100 text-gray-500'
                   }`}>
@@ -2042,7 +2038,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                         <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{displayBody}</p>
                         <div className="flex items-center justify-between mt-2">
                           <span className="text-[10px] text-slate-400 font-medium">
-                            {new Date(n.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            {fmtDateTime(language, n.created_at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                           </span>
                           {isLiveNotif && n.room_id && (
                             <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600">
@@ -2099,8 +2095,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               <div className="cat-icon-box w-14 h-14 rounded-2xl flex items-center justify-center mb-3 transition-all duration-300" style={{ background: isActive ? 'rgba(255,255,255,0.25)' : cat.bgColor }}>
                 <Icon className={`w-7 h-7 transition-all duration-300 ${isActive ? 'text-white drop-shadow category-icon-active' : 'text-blue-500'}`} />
               </div>
-              <p className={`font-bold text-base transition-colors ${isActive ? 'text-white' : 'text-gray-800'}`}>{language === 'en' ? cat.name : cat.nameAr}</p>
-              <p className={`text-sm mt-1 font-cairo transition-colors ${isActive ? 'text-blue-100' : ''}`} style={{ color: isActive ? undefined : cat.color }}>{language === 'en' ? cat.nameAr : cat.name}</p>
+              <p className={`font-bold text-base transition-colors ${isActive ? 'text-white' : 'text-gray-800'}`}>{trL(language, cat.name, cat.nameAr)}</p>
               <span className={`mt-2.5 inline-block text-xs font-semibold px-3 py-1.5 rounded-full ${isActive ? 'bg-white text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
                 {subjects.filter(s => s.categoryId === cat.id).length} {t('subjects', 'مواد')}
               </span>
@@ -2118,8 +2113,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
         <div>
-          <h1 className="font-bold text-gray-900 text-lg">{language === 'en' ? selectedCategory.name : selectedCategory.nameAr}</h1>
-          <p className="text-sm font-cairo" style={{ color: selectedCategory.color }}>{language === 'en' ? selectedCategory.nameAr : selectedCategory.name}</p>
+          <h1 className="font-bold text-gray-900 text-lg">{trL(language, selectedCategory.name, selectedCategory.nameAr)}</h1>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-5 space-y-5 animate-slide-up">
@@ -2132,18 +2126,15 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
             <button
               key={sub.id}
               onClick={() => { setSelectedSubject(sub); nav('levels'); }}
-              className={`w-full rounded-2xl p-4 sm:p-5 shadow-sm card-hover interactive-card subject-card-hover flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 animate-slide-up text-start border-2 transition-all duration-300 ${
-                i === 0 ? 'border-blue-500 bg-blue-50' : 'bg-white border-gray-100 hover:border-blue-300'
-              }`}
+              className={`w-full rounded-2xl p-4 sm:p-5 shadow-sm card-hover interactive-card subject-card-hover flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 animate-slide-up text-start border-2 transition-all duration-300 bg-white border-gray-100 hover:border-blue-300`}
               style={{ animationDelay: `${i * 80}ms` }}
             >
               <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                <div className={`cat-icon-box w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-300 ${i === 0 ? 'bg-blue-600 shadow-lg shadow-blue-200' : 'bg-blue-50'}`}>
-                  <BookMarked className={`w-6 h-6 ${i === 0 ? 'text-white' : 'text-blue-600'}`} />
+                <div className={`cat-icon-box w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-300 bg-blue-50`}>
+                  <BookMarked className={`w-6 h-6 text-blue-600`} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className={`font-bold text-base leading-snug truncate ${i === 0 ? 'text-blue-600' : 'text-gray-800'}`}>{language === 'en' ? sub.name : sub.nameAr}</p>
-                  <p className="text-xs font-cairo text-gray-400 mt-0.5 truncate">{language === 'en' ? sub.nameAr : sub.name}</p>
+                  <p className={`font-bold text-base leading-snug truncate text-gray-800`}>{trL(language, sub.name, sub.nameAr)}</p>
                   <div className="flex items-center gap-3 mt-2 flex-wrap text-xs text-gray-500 whitespace-nowrap-safe">
                     <span className="inline-flex items-center gap-1">
                       <Users className="w-3.5 h-3.5" /> {getSubjectTutorCount(sub)} {t('tutors', 'مدرسين')}
@@ -2156,18 +2147,15 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               </div>
               <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100/70 flex-shrink-0">
                 <div className="text-start sm:text-end">
-                  <p className={`font-bold text-sm sm:text-base whitespace-nowrap-safe ${i === 0 ? 'text-blue-600' : 'text-gray-700'}`}>{t('From', 'من')} {formatCurrency(getSubjectMinPrice(sub))}/{t('hr', 'ساعة')}</p>
+                  <p className={`font-bold text-sm sm:text-base whitespace-nowrap-safe text-gray-700`}>{t('From', 'من')} {formatCurrency(getSubjectMinPrice(sub))}/{t('hr', 'ساعة')}</p>
                   <p className="text-[11px] text-gray-400 whitespace-nowrap-safe">{getSubjectLevels(sub).length} {t('courses available', 'مواد متاحة')}</p>
                 </div>
-                <ChevronRight className={`w-5 h-5 flex-shrink-0 rtl:rotate-180 ${i === 0 ? 'text-blue-500' : 'text-gray-300'}`} />
+                <ChevronRight className={`w-5 h-5 flex-shrink-0 rtl:rotate-180 text-gray-300`} />
               </div>
             </button>
           ))}
 
         </div>
-      </div>
-      <div className="p-4">
-        <div className="h-12 gradient-animated rounded-2xl shadow-lg shadow-blue-200" />
       </div>
     </div>
   );
@@ -2181,14 +2169,13 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
         <div>
-          <h1 className="font-bold text-gray-900 text-lg">{language === 'en' ? selectedSubject.name : selectedSubject.nameAr}</h1>
-          <p className="text-sm font-cairo text-gray-400">{language === 'en' ? selectedSubject.nameAr : selectedSubject.name}</p>
+          <h1 className="font-bold text-gray-900 text-lg">{trL(language, selectedSubject.name, selectedSubject.nameAr)}</h1>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-5 space-y-5 animate-slide-up">
         <div>
           <h2 className="font-bold text-gray-900 text-xl">{t('Available Courses', 'المواد المتاحة للتعلم')}</h2>
-          <p className="text-sm text-gray-400 mt-1">{t(`${coursesForSubject.length} courses available — choose what you want to learn`, `${coursesForSubject.length} مادة متاحة — اختر ما تريد تعلمه`)}</p>
+          <p className="text-sm text-gray-400 mt-1">{t(`${coursesForSubject.length} courses available — choose what you want to learn`, `${coursesForSubject.length} مادة متاحة — اختر ما تريد تعلمه`, `${coursesForSubject.length} cours disponibles — choisissez ce que vous voulez apprendre`)}</p>
         </div>
         <div className="space-y-3">
           {coursesForSubject.map((course, i) => (
@@ -2210,10 +2197,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                 </div>
                 <div className="flex-1 text-start min-w-0">
                   <p className={`font-bold text-base leading-snug truncate ${course.isPopular ? 'text-white' : 'text-gray-900'}`}>
-                    {language === 'en' ? course.name : course.nameAr}
-                  </p>
-                  <p className={`text-xs font-cairo mt-0.5 truncate ${course.isPopular ? 'text-blue-100' : 'text-gray-400'}`}>
-                    {language === 'en' ? course.nameAr : course.name}
+                    {trL(language, course.name, course.nameAr)}
                   </p>
                   <div className={`flex items-center gap-3 mt-2 flex-wrap text-xs whitespace-nowrap-safe ${course.isPopular ? 'text-white/80' : 'text-gray-500'}`}>
                     <span className="inline-flex items-center gap-1">
@@ -2711,7 +2695,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
                         </div>
                       </div>
                       <span className="text-[10px] text-gray-400 flex-shrink-0">
-                        {new Date(r.created_at).toLocaleDateString()}
+                        {fmtDate(language, r.created_at)}
                       </span>
                     </div>
                     {r.comment && <p className="text-xs text-gray-600 leading-relaxed">{r.comment}</p>}
@@ -2746,7 +2730,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
         <button onClick={() => nav('tutor-profile')} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
           <ArrowLeft className="w-5 h-5 text-gray-600" />
         </button>
-        <h1 className="font-bold text-gray-900">Book a Session</h1>
+        <h1 className="font-bold text-gray-900">{t('Book a Session', 'احجز حصة', 'Réserver une session')}</h1>
       </div>
       <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4 animate-slide-up pb-6">
         <div className="bg-white rounded-2xl p-4 shadow-sm flex items-center gap-3">
@@ -2806,8 +2790,8 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           }`}
         >
           {!PAID_PLANS_ENABLED
-            ? t(`Confirm Free Trial Booking (${selectedSlots.length} sessions) →`, `تأكيد الحجز التجريبي المجاني (${selectedSlots.length} حصص) ←`)
-            : t(`Continue to Payment (${selectedSlots.length} sessions) →`, `متابعة للدفع (${selectedSlots.length} حصص) ←`)}
+            ? t(`Confirm Free Trial Booking (${selectedSlots.length} sessions) →`, `تأكيد الحجز التجريبي المجاني (${selectedSlots.length} حصص) ←`, `Confirmer la réservation d'essai (${selectedSlots.length} sessions) →`)
+            : t(`Continue to Payment (${selectedSlots.length} sessions) →`, `متابعة للدفع (${selectedSlots.length} حصص) ←`, `Continuer vers le paiement (${selectedSlots.length} sessions) →`)}
         </button>
       </div>
     </div>
@@ -2845,7 +2829,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
         {paymentMethod === 'card' && (
           <div className="bg-white rounded-2xl p-4 shadow-sm space-y-4 animate-slide-up">
             <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1.5">Card Number</label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5">{t('Card Number', 'رقم البطاقة', 'Numéro de carte')}</label>
               <input placeholder="1234 5678 9012 3456" className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:border-blue-400 focus:ring-2 focus:ring-blue-50 transition-all" />
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -2859,15 +2843,15 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
               </div>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1.5">Cardholder Name</label>
-              <input placeholder="John Smith" className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:border-blue-400 focus:ring-2 focus:ring-blue-50 transition-all" />
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5">{t('Cardholder Name', 'اسم حامل البطاقة', 'Titulaire de la carte')}</label>
+              <input placeholder={t('Name on card', 'الاسم على البطاقة', 'Nom sur la carte')} className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:border-blue-400 focus:ring-2 focus:ring-blue-50 transition-all" />
             </div>
           </div>
         )}
 
         <div className="bg-blue-50 rounded-2xl p-4 border border-blue-100">
           {[
-            { label: t(`Sessions (${selectedSlots.length})`, `الحصص (${selectedSlots.length})`), value: formatCurrency(selectedSlots.length * selectedTutor.hourlyRate) },
+            { label: t(`Sessions (${selectedSlots.length})`, `الحصص (${selectedSlots.length})`, `Sessions (${selectedSlots.length})`), value: formatCurrency(selectedSlots.length * selectedTutor.hourlyRate) },
             { label: t('Platform Fee (5%)', 'رسوم المنصة (5%)'), value: formatCurrency(selectedSlots.length * selectedTutor.hourlyRate * 0.05) },
             { label: t('Total', 'الإجمالي'), value: formatCurrency(selectedSlots.length * selectedTutor.hourlyRate * 1.05), bold: true },
           ].map(({ label, value, bold }) => (
@@ -2902,7 +2886,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
           {lastBooking.map(s => (
             <div key={s.id} className="flex justify-between text-sm">
               <span className="text-gray-400">{s.date}</span>
-              <span className="font-semibold text-gray-800">{s.startTime} – {s.endTime}</span>
+              <span className="font-semibold text-gray-800">{fmtClock(language, s.startTime)} – {fmtClock(language, s.endTime)}</span>
             </div>
           ))}
           <div className="flex justify-between text-sm border-t border-gray-100 pt-2">
@@ -2950,7 +2934,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
         ) : (
           realMessages.map((msg) => {
             const isMe = msg.sender_id === user.id;
-            const timeStr = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const timeStr = fmtTime(language, msg.created_at);
 
             return (
               <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} animate-slide-up`}>
@@ -3000,7 +2984,7 @@ export default function StudentApp({ user, onLogout, language, onChangeLanguage,
         <button
           onClick={sendMessage}
           disabled={!chatInput.trim()}
-          aria-label="Send message"
+          aria-label={t('Send message', 'إرسال الرسالة', 'Envoyer le message')}
           className="w-11 h-11 min-w-[44px] min-h-[44px] bg-blue-600 rounded-xl flex items-center justify-center text-white hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm shadow-blue-200 flex-shrink-0"
         >
           <Send className="w-4 h-4" />
@@ -3135,7 +3119,7 @@ function BottomNav({ active, onChange, language, isDark }: {
                   isActive ? 'text-white font-extrabold' : 'text-slate-500 dark:text-slate-400'
                 }`}
               >
-                {language === 'en' ? label : labelAr}
+                {trL(language, label, labelAr)}
               </span>
             </button>
           );

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { makeT } from '../i18n';
 import { ArrowLeft, Check, Crown, Gift, History, Sparkles, Wallet, CreditCard, ShieldCheck, ExternalLink, Loader2, Lock } from 'lucide-react';
 import { CREDIT_PACKAGES, claimFreeTrialCredits, purchasePackage, useCreditBalance, type CreditPackage } from '../lib/credits';
 import { createChargilyCheckout, type ChargilyPaymentMethod } from '../lib/chargily';
@@ -11,7 +12,7 @@ type Props = {
 };
 
 export default function PackagesScreen({ language, onBack, onHistory }: Props) {
-  const t = (en: string, ar: string, fr?: string) => (language === 'ar' ? ar : (language === 'fr' ? (fr || en) : en));
+  const t = makeT(language);
   const balance = useCreditBalance();
   const [selectedPkg, setSelectedPkg] = useState<CreditPackage | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<ChargilyPaymentMethod>('edahabia');
@@ -33,18 +34,12 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
       } else if (res.alreadySufficient) {
         setTrialBanner({
           type: 'info',
-          message: t(
-            `You already have ${res.balance} Free Trial Credits ready to use! Come back when your balance reaches 2 or fewer.`,
-            `لديك بالفعل ${res.balance} أرصدة تجريبية مجانية جاهزة للاستخدام! يمكنك المطالبة بمزيد عندما يصل رصيدك إلى 2 أو أقل.`
-          )
+          message: t(`You already have ${res.balance} Free Trial Credits ready to use! Come back when your balance reaches 2 or fewer.`, `لديك بالفعل ${res.balance} أرصدة تجريبية مجانية جاهزة للاستخدام! يمكنك المطالبة بمزيد عندما يصل رصيدك إلى 2 أو أقل.`, `Vous avez déjà ${res.balance} crédits d'essai disponibles ! Revenez quand votre solde sera de 2 ou moins.`)
         });
       } else {
         setTrialBanner({
           type: 'success',
-          message: t(
-            `+${res.granted} Free Trial Credits added! Your balance is now ${res.balance} credits.`,
-            `تمت إضافة +${res.granted} أرصدة تجريبية مجانية! رصيدك الآن ${res.balance} رصيد.`
-          )
+          message: t(`+${res.granted} Free Trial Credits added! Your balance is now ${res.balance} credits.`, `تمت إضافة +${res.granted} أرصدة تجريبية مجانية! رصيدك الآن ${res.balance} رصيد.`, `+${res.granted} crédits d'essai ajoutés ! Votre solde est de ${res.balance} crédits.`)
         });
       }
     } finally {
@@ -223,7 +218,7 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
             <div className="mt-3 space-y-1.5">
               <p className="flex items-center gap-2 text-xs text-gray-600">
                 <Check className="w-3.5 h-3.5 text-green-500" />
-                {t(`${pkg.credits} session credits (valid 90 days)`, `${pkg.credits} رصيد للحصص (صالح 90 يوماً)`)}
+                {t(`${pkg.credits} session credits (valid 90 days)`, `${pkg.credits} رصيد للحصص (صالح 90 يوماً)`, `${pkg.credits} crédits de session (valables 90 jours)`)}
               </p>
               <p className="flex items-center gap-2 text-xs font-semibold text-amber-600">
                 <Gift className="w-3.5 h-3.5" /> {language === 'ar' ? pkg.giftAr : pkg.gift}
@@ -355,10 +350,7 @@ export default function PackagesScreen({ language, onBack, onHistory }: Props) {
             <h3 className="font-bold text-gray-900 text-lg">{t('Payment Successful!', 'تم الدفع الإلكتروني بنجاح!')}</h3>
 
             <p className="text-sm text-gray-500 mt-2">
-              {t(
-                `${justPurchased.credits} credits + ${justPurchased.bonusCredits} bonus added to your balance.`,
-                `تمت إضافة ${justPurchased.credits} رصيد + ${justPurchased.bonusCredits} رصيد مجاني إلى حسابك.`
-              )}
+              {t(`${justPurchased.credits} credits + ${justPurchased.bonusCredits} bonus added to your balance.`, `تمت إضافة ${justPurchased.credits} رصيد + ${justPurchased.bonusCredits} رصيد مجاني إلى حسابك.`, `${justPurchased.credits} crédits + ${justPurchased.bonusCredits} en bonus ajoutés à votre solde.`)}
             </p>
             <p className="text-2xl font-bold text-blue-600 mt-3">
               {balance} {t('credits', 'رصيد')}

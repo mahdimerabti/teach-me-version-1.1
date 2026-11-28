@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { makeT } from '../i18n';
 import {
   ZoomIn,
   ZoomOut,
@@ -132,8 +133,7 @@ export default function ZoomViewerWidget({
   isStreamingCanvas = false,
   onToggleStreamCanvas
 }: Props) {
-  const t = (en: string, ar: string, fr?: string) =>
-    language === 'ar' ? ar : language === 'fr' ? fr || en : en;
+  const t = makeT(language);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
