@@ -383,19 +383,11 @@ export default function AuthScreen({ onAuth, language, onChangeLanguage, initial
           'Veuillez confirmer votre adresse e-mail.'
         );
       } else if (err.message?.toLowerCase().includes('failed to fetch') || err.name === 'TypeError') {
-        // Network connection or fetch failure fallback: allow instant local session login so user is never locked out
-        authLog('Network fetch failed, attempting local authentication session fallback');
-        const fallbackName = form.name.trim() || trimmedEmail.split('@')[0] || 'User';
-        const fallbackUser = {
-          name: fallbackName,
-          email: trimmedEmail,
-          role: role,
-          id: `usr-offline-${Date.now()}`
-        };
-        localStorage.setItem('tm_user_session', JSON.stringify(fallbackUser));
-        onAuth(fallbackUser);
-        setLoading(false);
-        return;
+        msg = t(
+          'Unable to connect to the authentication server. Please check your internet connection and try again.',
+          'تعذر الاتصال بخادم المصادقة. يرجى التحقق من اتصالك بالإنترنت والمحاولة مرة أخرى.',
+          'Impossible de joindre le serveur d\'authentification. Vérifiez votre connexion Internet.'
+        );
       }
       setError(msg);
     } finally {

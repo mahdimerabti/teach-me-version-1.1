@@ -37,7 +37,7 @@ public class MainActivity extends BridgeActivity {
                 WebSettings settings = webView.getSettings();
                 settings.setJavaScriptEnabled(true);
                 settings.setDomStorageEnabled(true);
-                settings.setAllowFileAccess(true);
+                settings.setAllowFileAccess(false);
                 settings.setMediaPlaybackRequiresUserGesture(false);
 
                 // Use clean Mobile Chrome User-Agent so Google OAuth never rejects with 403 disallowed_useragent
@@ -150,7 +150,25 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
+    private boolean isTrustedMediaOrigin(Uri origin) {
+        if (origin == null) return false;
+        String scheme = origin.getScheme();
+        String host = origin.getHost();
+        if (!"https".equalsIgnoreCase(scheme) || host == null) return false;
+        String h = host.toLowerCase();
+        return h.equals("teachmelearn.netlify.app")
+                || h.equals("teach-me-app-one.vercel.app")
+                || h.equals("meet.jit.si")
+                || h.endsWith(".jit.si")
+                || h.equals("localhost");
+    }
+
     private void handleWebViewPermissionRequest(final PermissionRequest request) {
+        if (request == null || !isTrustedMediaOrigin(request.getOrigin())) {
+            if (request != null) request.deny();
+            return;
+        }
+
         List<String> missingPermissions = new ArrayList<>();
 
         for (String resource : request.getResources()) {
@@ -168,7 +186,7 @@ public class MainActivity extends BridgeActivity {
         }
 
         if (missingPermissions.isEmpty()) {
-            request.grant(request.getResources());
+            grantAuthorizedWebResources(request);
         } else {
             this.pendingWebPermissionRequest = request;
             ActivityCompat.requestPermissions(
@@ -176,6 +194,24 @@ public class MainActivity extends BridgeActivity {
                     missingPermissions.toArray(new String[0]),
                     WEBRTC_PERMISSION_REQUEST_CODE
             );
+        }
+    }
+
+    private void grantAuthorizedWebResources(final PermissionRequest req) {
+        List<String> allowed = new ArrayList<>();
+        for (String resource : req.getResources()) {
+            if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)
+                    && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                allowed.add(resource);
+            } else if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)
+                    && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                allowed.add(resource);
+            }
+        }
+        if (!allowed.isEmpty()) {
+            runOnUiThread(() -> req.grant(allowed.toArray(new String[0])));
+        } else {
+            runOnUiThread(req::deny);
         }
     }
 
@@ -190,22 +226,7 @@ public class MainActivity extends BridgeActivity {
         if (requestCode == WEBRTC_PERMISSION_REQUEST_CODE && this.pendingWebPermissionRequest != null) {
             final PermissionRequest req = this.pendingWebPermissionRequest;
             this.pendingWebPermissionRequest = null;
-
-            boolean anyGranted = false;
-            for (int res : grantResults) {
-                if (res == PackageManager.PERMISSION_GRANTED) {
-                    anyGranted = true;
-                    break;
-                }
-            }
-
-            if (anyGranted
-                    || ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                    || ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                runOnUiThread(() -> req.grant(req.getResources()));
-            } else {
-                runOnUiThread(req::deny);
-            }
+            grantAuthorizedWebResources(req);
         }
     }
 }

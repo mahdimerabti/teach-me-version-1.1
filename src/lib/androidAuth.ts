@@ -191,7 +191,7 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
       return { success: false, error: 'Could not generate OAuth authentication URL for Android.' };
     }
 
-    authLog(`OAuth URL generated for Android: ${data.url}`);
+    authLog('OAuth URL generated for Android');
 
     // Pure file:///android_asset WebView: stay inside the WebView itself (MainActivity sets Chrome UA + intercepts deep link)
     if (isPureFileWebView()) {
@@ -203,14 +203,13 @@ export async function performAndroidGoogleSignIn(role: 'student' | 'tutor' | 'ad
     // Capacitor native: use in-app Chrome Custom Tab + App deep-link listener
     try {
       const urlListener = await App.addListener('appUrlOpen', async (event: { url: string }) => {
-        authLog(`appUrlOpen event fired in performAndroidGoogleSignIn: ${event.url}`);
+        authLog('appUrlOpen event fired in performAndroidGoogleSignIn');
         if (
           event.url &&
-          (event.url.includes('login-callback') ||
-            event.url.includes('google-auth') ||
-            event.url.includes('com.teachme.app') ||
-            event.url.includes('access_token') ||
-            event.url.includes('code='))
+          (event.url.startsWith('com.teachme.app://login-callback') ||
+            event.url.startsWith('com.teachme.app://google-auth') ||
+            event.url.startsWith('https://teachmelearn.netlify.app') ||
+            event.url.startsWith('https://teach-me-app-one.vercel.app'))
         ) {
           try {
             await handleOAuthDeepLink(event.url);

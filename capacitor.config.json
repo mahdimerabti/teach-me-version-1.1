@@ -11,24 +11,25 @@
       "*.supabase.in",
       "meet.jit.si",
       "*.jit.si",
-      "*.netlify.app",
+      "teachmelearn.netlify.app",
+      "teach-me-app-one.vercel.app",
       "accounts.google.com",
-      "*.googleapis.com",
-      "*"
+      "*.googleapis.com"
     ]
   },
   "android": {
-    "allowMixedContent": true,
+    "allowMixedContent": false,
     "captureInput": true,
-    "webContentsDebuggingEnabled": true
+    "webContentsDebuggingEnabled": false,
+    "adjustMarginsForEdgeToEdge": "force"
   },
   "plugins": {
     "Browser": {
       "presentationStyle": "popover"
     },
     "StatusBar": {
-      "style": "DARK",
-      "backgroundColor": "#f8fafc",
+      "style": "LIGHT",
+      "backgroundColor": "#ffffff",
       "overlaysWebView": false
     }
   }

@@ -755,11 +755,12 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                     {selectedTutor.certificates.map((c: string, idx: number) => {
                       const parts = c.split('|');
                       const title = parts[0];
-                      const url = parts[1];
-                      return url ? (
+                      const rawUrl = (parts[1] || '').trim();
+                      const safeUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : '';
+                      return safeUrl ? (
                         <a
                           key={idx}
-                          href={url}
+                          href={safeUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 px-3 sm:px-2.5 py-2 sm:py-1 rounded-xl sm:rounded-lg text-xs sm:text-[11px] font-semibold border border-blue-100 transition-colors break-all"
@@ -776,21 +777,25 @@ export default function AdminDashboard({ user, onLogout, language, onChangeLangu
                 )}
               </div>
 
-              {(selectedTutor.id_document_url || selectedTutor.identity_document_url) && (
-                <div className="bg-emerald-50/70 rounded-2xl p-3 border border-emerald-100">
-                  <h4 className="font-bold text-emerald-800 mb-2 flex items-center gap-1.5 text-xs">
-                    🛡️ {t('Government ID Document', 'وثيقة الهوية الرسمية')}
-                  </h4>
-                  <a
-                    href={selectedTutor.id_document_url || selectedTutor.identity_document_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2.5 sm:py-1.5 rounded-xl font-bold text-xs shadow-sm transition-all"
-                  >
-                    📄 {t('View Uploaded Identity Document', 'فتح معينة وثيقة الهوية')}
-                  </a>
-                </div>
-              )}
+              {(() => {
+                const rawDocUrl = String(selectedTutor.id_document_url || selectedTutor.identity_document_url || '').trim();
+                const safeDocUrl = /^https?:\/\//i.test(rawDocUrl) ? rawDocUrl : '';
+                return safeDocUrl ? (
+                  <div className="bg-emerald-50/70 rounded-2xl p-3 border border-emerald-100">
+                    <h4 className="font-bold text-emerald-800 mb-2 flex items-center gap-1.5 text-xs">
+                      🛡️ {t('Government ID Document', 'وثيقة الهوية الرسمية')}
+                    </h4>
+                    <a
+                      href={safeDocUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2.5 sm:py-1.5 rounded-xl font-bold text-xs shadow-sm transition-all"
+                    >
+                      📄 {t('View Uploaded Identity Document', 'فتح معينة وثيقة الهوية')}
+                    </a>
+                  </div>
+                ) : null;
+              })()}
             </div>
 
             <div className="space-y-2.5 border-t border-slate-100 pt-4">

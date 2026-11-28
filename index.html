@@ -91,6 +91,17 @@
     <div id="tm-initial-splash" role="status" aria-label="Loading Teach Me">
       <div class="tm-splash-brand">Teach Me</div>
       <div class="tm-splash-spinner"></div>
+      <script>
+        (function() {
+          setTimeout(function() {
+            var splash = document.getElementById('tm-initial-splash');
+            if (splash && !splash.classList.contains('tm-splash-hidden')) {
+              splash.classList.add('tm-splash-hidden');
+              setTimeout(function() { if (splash && splash.parentNode) splash.remove(); }, 260);
+            }
+          }, 3000);
+        })();
+      </script>
     </div>
     <div id="root" class="h-full flex flex-col"></div>
     <script type="module" src="/src/main.tsx"></script>

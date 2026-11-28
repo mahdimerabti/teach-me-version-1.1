@@ -163,7 +163,7 @@ export default function App() {
     // Safety ceiling timer so splash can never hang indefinitely on offline networks
     const loadingTimeout = setTimeout(() => {
       if (isMounted) setIsAuthLoading(false);
-    }, 8000);
+    }, 2000);
 
     const cleanOAuthParamsFromUrl = () => {
       if (typeof window === 'undefined') return;
@@ -250,7 +250,7 @@ export default function App() {
         authLog('Awaiting supabase.auth.getSession() (allows detectSessionInUrl PKCE exchange to finish)...');
         let { data: { session }, error: sessionError } = await Promise.race([
           supabase.auth.getSession(),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AUTH_SESSION_TIMEOUT')), 7000))
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AUTH_SESSION_TIMEOUT')), 1800))
         ]);
         if (sessionError) {
           authLog(`getSession notice: ${sessionError.message}`);
@@ -324,7 +324,7 @@ export default function App() {
       authUser.email?.split('@')[0] ||
       'User';
 
-    const fastFetch = <T,>(p: PromiseLike<T>, ms = 4500): Promise<T> => {
+    const fastFetch = <T,>(p: PromiseLike<T>, ms = 2000): Promise<T> => {
       return Promise.race([
         Promise.resolve(p),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), ms))

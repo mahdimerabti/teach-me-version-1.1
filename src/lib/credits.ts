@@ -266,44 +266,17 @@ export async function spendTrialCreditForLiveJoin(tutorId?: string, cost = 1): P
   }
 }
 
-export async function purchasePackage(pkg: CreditPackage, paymentMethod?: string): Promise<void> {
+export async function purchasePackage(pkg: CreditPackage, _paymentMethod?: string): Promise<void> {
   if (!PAID_PLANS_ENABLED) {
     throw new Error('Paid packages are temporarily disabled during Free Trial.');
   }
-  try {
-    const { error } = await supabase.rpc('purchase_package', {
-      p_package_code: pkg.id
-    });
-    if (error) {
-      const totalAdded = pkg.credits + pkg.bonusCredits;
-      globalBalance += totalAdded;
-      globalHistory.unshift({
-        id: `tx_${Date.now()}`,
-        amount: totalAdded,
-        type: 'purchase',
-        label: `${pkg.name} Package (${paymentMethod ? paymentMethod.toUpperCase() : 'Online Payment'})`,
-        labelAr: `باقة ${pkg.nameAr} (${paymentMethod ? paymentMethod.toUpperCase() : 'الدفع الإلكتروني'})`,
-        packageId: pkg.id,
-        createdAt: new Date().toISOString()
-      });
-      notify();
-    } else {
-      await fetchBalanceAndHistory();
-    }
-  } catch (_err) {
-    const totalAdded = pkg.credits + pkg.bonusCredits;
-    globalBalance += totalAdded;
-    globalHistory.unshift({
-      id: `tx_${Date.now()}`,
-      amount: totalAdded,
-      type: 'purchase',
-      label: `${pkg.name} Package (${paymentMethod ? paymentMethod.toUpperCase() : 'Online Payment'})`,
-      labelAr: `باقة ${pkg.nameAr} (${paymentMethod ? paymentMethod.toUpperCase() : 'الدفع الإلكتروني'})`,
-      packageId: pkg.id,
-      createdAt: new Date().toISOString()
-    });
-    notify();
+  const { error } = await supabase.rpc('purchase_package', {
+    p_package_code: pkg.id
+  });
+  if (error) {
+    throw new Error(error.message || 'Payment verification failed');
   }
+  await fetchBalanceAndHistory();
 }
 
 export type SpendResult = 'ok' | 'already_paid' | 'insufficient';
